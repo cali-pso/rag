@@ -1,4 +1,5 @@
 import ast
+import re
 from typing import List, Optional
 from pydantic import BaseModel, Field, validate_call
 from src.models import MinimalSource
@@ -26,7 +27,18 @@ class Chunker(BaseModel):
             with open(file_path, "r") as f:
                 content = f.read()
 
-        raw_chunks = content.split(sep_list[sep_index])
+        escaped_sep = re.escape(sep_list[sep_index])
+
+        raw_split = re.split(f"({escaped_sep})", content)
+
+        raw_chunks = []
+        if raw_split[0]:
+            raw_chunks.append(raw_split[0])
+
+        for i in range(1, len(raw_split), 2):
+            separator = raw_split[i]
+            text_block = raw_split[i + 1]
+            raw_chunks.append(separator + text_block)
 
         for chunk in raw_chunks:
             if len(chunk) < max_chunk_size:
