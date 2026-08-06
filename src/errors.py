@@ -1,0 +1,2 @@
+class ErrorChunking(Exception):
+    pass

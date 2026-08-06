@@ -7,7 +7,9 @@ authors = [
     { name = "cali-pso", email = "raphael.poggi@laposte.net" }
 ]
 requires-python = ">=3.13"
-dependencies = []
+dependencies = [
+    "pydantic>=2.13.4",
+]
 
 [project.scripts]
 rag = "rag:main"
