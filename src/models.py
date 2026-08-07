@@ -6,4 +6,3 @@ class MinimalSource(BaseModel):
     first_character_index: int
     last_character_index: int
     content: str
-    split_on: str

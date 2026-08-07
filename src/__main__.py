@@ -1,5 +1,6 @@
 import os
 import time
+import fire
 from typing import Dict, List
 from src.chunker import Chunker
 
@@ -17,19 +18,30 @@ def sort_files(root_path: str) -> Dict[str, List[str]]:
     return {"md_paths": md_paths, "py_paths": py_paths}
 
 
-def test_main() -> None:
+def index(max_chunk_size: int = 2000) -> None:
     start = time.time()
     paths = sort_files("data")
     chunker = Chunker()
+    sources = []
+    chunks = 0
     files = 0
     for file in paths["md_paths"]:
-        chunker.chunk_md(file_path=file)
+        for chunk in chunker.chunk_md(
+            file_path=file, max_chunk_size=max_chunk_size
+        ):
+            chunks += 1
+            sources.append(chunk)
         files += 1
     for file in paths["py_paths"]:
-        chunker.chunk_py(file_path=file)
+        for chunk in chunker.chunk_py(
+            file_path=file, max_chunk_size=max_chunk_size
+        ):
+            chunks += 1
+            sources.append(chunk)
         files += 1
-    print(f"Indexed {files} files in {time.time() - start}s")
+    chunker.dump_index(sources)
+    print(f"Indexed {files} files as {chunks} sources in {time.time() - start}s")
 
 
 if __name__ == "__main__":
-    test_main()
+    fire.Fire()

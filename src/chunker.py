@@ -1,5 +1,6 @@
 import ast
 import re
+import os
 from typing import List, Optional
 from pydantic import BaseModel, Field, validate_call
 from src.models import MinimalSource
@@ -50,7 +51,6 @@ class Chunker(BaseModel):
                         first_character_index=start_index,
                         last_character_index=end_index,
                         content=chunk,
-                        split_on=sep_list[sep_index],
                     )
                 )
                 current_index = end_index
@@ -87,34 +87,63 @@ class Chunker(BaseModel):
 
         try:
             tree = ast.parse(content)
+        #            print(ast.dump(tree, indent=4))
+        #           input()
         except SyntaxError:
             return self.chunk_md(
                 file_path=file_path,
                 content=content,
                 sep_list=["class", "def", "for", "\n", " "],
+                max_chunk_size=max_chunk_size,
             )
 
-        for node in ast.walk(tree):
-            if isinstance(node, (ast.FunctionDef, ast.ClassDef)):
-                start_line = node.lineno - 1
-                end_line = node.end_lineno
+        for node in tree.body:
+            start_line = node.lineno - 1
+            end_line = node.end_lineno
 
-                chunk_text = "".join(lines[start_line:end_line])
+            chunk_text = "".join(lines[start_line:end_line])
 
-                if len(chunk_text) < max_chunk_size:
-                    start_index = sum(len(line) for line in lines[:start_line])
-                    end_index = start_index + len(chunk_text)
+            if len(chunk_text) < max_chunk_size:
+                start_index = sum(len(line) for line in lines[:start_line])
+                end_index = start_index + len(chunk_text)
 
-                    chunks.append(
-                        MinimalSource(
-                            file_path=file_path,
-                            first_character_index=start_index,
-                            last_character_index=end_index,
-                            content=chunk_text,
-                            split_on="func"
-                            if isinstance(node, ast.FunctionDef)
-                            else "cls",
-                        )
+                chunks.append(
+                    MinimalSource(
+                        file_path=file_path,
+                        first_character_index=start_index,
+                        last_character_index=end_index,
+                        content=chunk_text,
                     )
+                )
+            else:
+                chunks = chunks + self.chunk_md(
+                    file_path=file_path,
+                    content=content,
+                    sep_list=[
+                        "class",
+                        "def",
+                        "for",
+                        "\n\n\n",
+                        "\n\n",
+                        "\n",
+                        " ",
+                    ],
+                    max_chunk_size=max_chunk_size,
+                )
+                for chunk in chunks:
+                    print(chunk)
+                    input()
 
         return chunks
+
+    def dump_index(
+        self,
+        sources: List[MinimalSource],
+        file_path: str = "data/processed/index.jsonl",
+    ) -> None:
+
+        os.makedirs(os.path.dirname(file_path), exist_ok=True)
+
+        with open(file_path, "w") as f:
+            for source in sources:
+                f.write(source.model_dump_json() + "\n")
