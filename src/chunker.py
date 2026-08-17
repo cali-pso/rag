@@ -41,32 +41,52 @@ class Chunker(BaseModel):
             text_block = raw_split[i + 1]
             raw_chunks.append(separator + text_block)
 
+        buffer = MinimalSource(
+            file_path=file_path,
+            first_character_index=-1,
+            last_character_index=0,
+            content="",
+        )
         for chunk in raw_chunks:
-            if len(chunk) < max_chunk_size:
-                start_index = content.find(chunk, current_index)
-                end_index = start_index + len(chunk)
-                chunks.append(
-                    MinimalSource(
+            if len(chunk) >= max_chunk_size:
+                if buffer.content:
+                    chunks.append(buffer)
+                    buffer = MinimalSource(
                         file_path=file_path,
-                        first_character_index=start_index,
-                        last_character_index=end_index,
-                        content=chunk,
+                        first_character_index=-1,
+                        last_character_index=0,
+                        content="",
                     )
-                )
-                current_index = end_index
-
-            else:
                 if sep_index + 1 < len(sep_list):
                     recursive_chunks = self.chunk_md(
                         file_path=file_path,
                         content=chunk,
                         sep_index=(sep_index + 1),
                     )
-
                 if recursive_chunks is not None:
                     chunks = chunks + recursive_chunks
                 else:
                     raise ErrorChunking(file_path)
+            elif len(buffer.content) + len(chunk) < max_chunk_size:
+                if buffer.first_character_index == -1:
+                    buffer.first_character_index = content.find(
+                        chunk, current_index
+                    )
+                    buffer.last_character_index = buffer.first_character_index
+                buffer.last_character_index += len(chunk)
+                buffer.content = buffer.content + chunk
+            else:
+                chunks.append(buffer)
+                start = content.find(chunk, current_index)
+                buffer = MinimalSource(
+                    file_path=file_path,
+                    first_character_index=start,
+                    last_character_index=start + len(chunk),
+                    content=chunk,
+                )
+            current_index += len(chunk)
+        if buffer.content:
+            chunks.append(buffer)
 
         return chunks
 
@@ -87,38 +107,39 @@ class Chunker(BaseModel):
 
         try:
             tree = ast.parse(content)
-        #            print(ast.dump(tree, indent=4))
-        #           input()
+#            print(ast.dump(tree, indent=4))
         except SyntaxError:
             return self.chunk_md(
                 file_path=file_path,
                 content=content,
-                sep_list=["class", "def", "for", "\n", " "],
+                sep_list=["class", "def", "for", "\n\n\n", "\n\n", "\n", " "],
                 max_chunk_size=max_chunk_size,
             )
+
+        buffer = MinimalSource(
+            file_path=file_path,
+            first_character_index=-1,
+            last_character_index=0,
+            content="",
+        )
 
         for node in tree.body:
             start_line = node.lineno - 1
             end_line = node.end_lineno
 
-            chunk_text = "".join(lines[start_line:end_line])
-
-            if len(chunk_text) < max_chunk_size:
-                start_index = sum(len(line) for line in lines[:start_line])
-                end_index = start_index + len(chunk_text)
-
-                chunks.append(
-                    MinimalSource(
+            node_text = "".join(lines[start_line:end_line])
+            if len(node_text) > max_chunk_size:
+                if buffer.content:
+                    chunks.append(buffer)
+                    buffer = MinimalSource(
                         file_path=file_path,
-                        first_character_index=start_index,
-                        last_character_index=end_index,
-                        content=chunk_text,
+                        first_character_index=-1,
+                        last_character_index=0,
+                        content="",
                     )
-                )
-            else:
                 chunks = chunks + self.chunk_md(
                     file_path=file_path,
-                    content=content,
+                    content=node_text,
                     sep_list=[
                         "class",
                         "def",
@@ -130,10 +151,35 @@ class Chunker(BaseModel):
                     ],
                     max_chunk_size=max_chunk_size,
                 )
-                for chunk in chunks:
-                    print(chunk)
-                    input()
-
+            elif len(buffer.content) + len(node_text) < max_chunk_size:
+                if buffer.first_character_index == -1:
+                    buffer.first_character_index = sum(
+                        len(line) for line in lines[:start_line]
+                    )
+                    buffer.last_character_index = buffer.first_character_index
+                buffer.content = buffer.content + node_text
+                buffer.last_character_index += len(node_text)
+            elif len(buffer.content) + len(node_text) >= max_chunk_size:
+                chunks.append(buffer)
+                start = sum(len(line) for line in lines[:start_line])
+                buffer = MinimalSource(
+                    file_path=file_path,
+                    first_character_index=start,
+                    last_character_index=start + len(node_text),
+                    content=node_text,
+                )
+            else:
+                raise Exception("what")
+        if buffer.content:
+            chunks.append(buffer)
+#       for chunk in chunks:
+#           print("============CHUNK START============")
+#           print(chunk.file_path)
+#           print(
+#               f"start:{chunk.first_character_index}\nend:{chunk.last_character_index}\nlen:{chunk.last_character_index - chunk.first_character_index}\n\ncontent:\n{chunk.content}"
+#           )
+#           print("============CHUNK END============")
+#           input()
         return chunks
 
     def dump_index(
