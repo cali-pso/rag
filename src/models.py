@@ -1,4 +1,5 @@
 from pydantic import BaseModel
+from typing import Dict
 
 
 class MinimalSource(BaseModel):
@@ -6,3 +7,7 @@ class MinimalSource(BaseModel):
     first_character_index: int
     last_character_index: int
     content: str
+
+
+class IndexCache(BaseModel):
+    file_hashes: Dict[str, str] = {}

@@ -15,7 +15,7 @@ class Chunker(BaseModel):
         content: Optional[str] = None,
         sep_index: int = 0,
         sep_list: List[str] = Field(
-            min_lenght=1, default=["\n#", "\n##", "\n###", "\n\n", "\n", " "]
+            min_lenght=1, default=["\n# ", "\n## ", "\n### ", "\n\n", "\n", " "]
         ),
         max_chunk_size: int = Field(lt=2001, default=2000),
     ) -> List[MinimalSource] | None:
@@ -69,9 +69,7 @@ class Chunker(BaseModel):
                     raise ErrorChunking(file_path)
             elif len(buffer.content) + len(chunk) < max_chunk_size:
                 if buffer.first_character_index == -1:
-                    buffer.first_character_index = content.find(
-                        chunk, current_index
-                    )
+                    buffer.first_character_index = current_index
                     buffer.last_character_index = buffer.first_character_index
                 buffer.last_character_index += len(chunk)
                 buffer.content = buffer.content + chunk
