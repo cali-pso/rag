@@ -2,11 +2,12 @@ import os
 import time
 import fire
 import hashlib
-import json
 from typing import Dict, List
-from src.chunker import Chunker
+from src.chunker import LexicalIndexer, load_index
+from src.bm25retriever import BM25Retriever
 from src.models import IndexCache
 
+LEXICAL_INDEX_PATH = "data/processed/lexical_index.json"
 CACHE_PATH = "data/processed/index_cache.json"
 
 
@@ -59,13 +60,33 @@ def sort_files(
 
 
 def index(max_chunk_size: int = 2000) -> None:
+    start = time.time()
     cache = load_cache()
     paths, updated_cache = sort_files("data", cache)
 
-    chunker = Chunker()
+    chunker = LexicalIndexer()
     chunker.create_index(paths)
 
     save_cache(cache)
+    print(f"Indexed {len(chunker.chunks)} in {time.time() - start}s")
+
+
+def search(query: str, k: int = 10) -> None:
+    start = time.time()
+    retriever = BM25Retriever()
+    sources_dict = load_index()
+    sources = []
+    for file in sources_dict:
+        for source in sources_dict[file]:
+            sources.append(source)
+    retriever.fit(sources)
+    answer = retriever.search(query, k)
+    for source in answer:
+        print(source)
+        print()
+        print()
+    print(f"Retrieved {k} sources in {time.time() - start}s")
+
 
 if __name__ == "__main__":
     fire.Fire()

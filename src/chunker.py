@@ -1,23 +1,23 @@
 import ast
 import re
 import os
-import time
 from typing import List, Optional, Dict
 from pydantic import BaseModel, Field, validate_call
 from src.models import MinimalSource
 from src.errors import ErrorChunking
 
+LEXICAL_INDEX_PATH = "data/processed/lexical_index.json"
 
-class Chunker(BaseModel):
+
+class LexicalIndexer(BaseModel):
     chunks: Dict[str, List[MinimalSource]] = {}
 
     @validate_call
     def create_index(
         self, paths: Dict[str, List[str]], max_chunk_size: int = 2000
     ) -> Dict[str, List[MinimalSource]]:
-        start = time.time()
         files = 0
-        self.load_index()
+        self.chunks = load_index()
         for file in paths["md_paths"]:
             self.chunks[file] = []
             for chunk in self.chunk_md(
@@ -33,9 +33,6 @@ class Chunker(BaseModel):
                 self.chunks[file].append(chunk)
             files += 1
         self.dump_index()
-        print(
-            f"Indexed {files} files as {len(self.chunks)} sources in {time.time() - start}s"
-        )
 
     @validate_call
     def chunk_md(
@@ -203,7 +200,7 @@ class Chunker(BaseModel):
 
     def dump_index(
         self,
-        file_path: str = "data/processed/index.json",
+        file_path: str = LEXICAL_INDEX_PATH,
     ) -> None:
 
         os.makedirs(os.path.dirname(file_path), exist_ok=True)
@@ -211,12 +208,13 @@ class Chunker(BaseModel):
         with open(file_path, "w") as f:
             f.write(self.model_dump_json())
 
-    def load_index(
-        self, file_path: str = "data/processed/index.json"
-    ) -> Dict[str, List[MinimalSource]]:
-        try:
-            with open(file_path, "r") as f:
-                content = Chunker.model_validate_json(f.read())
-                self.chunks = content.chunks
-        except FileNotFoundError:
-            return
+
+def load_index(
+    file_path: str = LEXICAL_INDEX_PATH,
+) -> Optional[Dict[str, List[MinimalSource]]]:
+    try:
+        with open(file_path, "r") as f:
+            content = LexicalIndexer.model_validate_json(f.read())
+            return content.chunks
+    except FileNotFoundError:
+        return {}
