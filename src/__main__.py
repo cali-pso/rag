@@ -21,10 +21,11 @@ def get_file_hash(filepath: str) -> str:
 
 def load_cache() -> IndexCache:
     """Loads the previous indexing state if it exists."""
-    if os.path.exists(CACHE_PATH):
+    try:
         with open(CACHE_PATH, "r") as f:
-            return IndexCache(**json.load(f))
-    return IndexCache()
+            return IndexCache.model_validate_json(f.read())
+    except Exception:
+        return IndexCache()
 
 
 def save_cache(cache: IndexCache) -> None:
@@ -34,10 +35,11 @@ def save_cache(cache: IndexCache) -> None:
         f.write(cache.model_dump_json(indent=4))
 
 
-def sort_files(root_path: str) -> Dict[str, List[str]]:
+def sort_files(
+    root_path: str, cache: IndexCache
+) -> (Dict[str, List[str]], IndexCache):
     md_paths = []
     py_paths = []
-    cache = load_cache()
 
     for root, _, files in os.walk(root_path):
         for file in files:
@@ -53,36 +55,17 @@ def sort_files(root_path: str) -> Dict[str, List[str]]:
                 if cache.file_hashes.get(full_path) != current_hash:
                     cache.file_hashes[full_path] = current_hash
                     py_paths.append(full_path)
-    save_cache(cache)
-    return {"md_paths": md_paths, "py_paths": py_paths}
+    return {"md_paths": md_paths, "py_paths": py_paths}, cache
 
 
 def index(max_chunk_size: int = 2000) -> None:
-    start = time.time()
-    paths = sort_files("data")
-    chunker = Chunker()
-    sources = []
-    chunks = 0
-    files = 0
-    for file in paths["md_paths"]:
-        for chunk in chunker.chunk_md(
-            file_path=file, max_chunk_size=max_chunk_size
-        ):
-            chunks += 1
-            sources.append(chunk)
-        files += 1
-    for file in paths["py_paths"]:
-        for chunk in chunker.chunk_py(
-            file_path=file, max_chunk_size=max_chunk_size
-        ):
-            chunks += 1
-            sources.append(chunk)
-        files += 1
-    chunker.dump_index(sources)
-    print(
-        f"Indexed {files} files as {chunks} sources in {time.time() - start}s"
-    )
+    cache = load_cache()
+    paths, updated_cache = sort_files("data", cache)
 
+    chunker = Chunker()
+    chunker.create_index(paths)
+
+    save_cache(cache)
 
 if __name__ == "__main__":
     fire.Fire()

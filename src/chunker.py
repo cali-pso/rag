@@ -1,13 +1,42 @@
 import ast
 import re
 import os
-from typing import List, Optional
+import time
+from typing import List, Optional, Dict
 from pydantic import BaseModel, Field, validate_call
 from src.models import MinimalSource
 from src.errors import ErrorChunking
 
 
 class Chunker(BaseModel):
+    chunks: Dict[str, List[MinimalSource]] = {}
+
+    @validate_call
+    def create_index(
+        self, paths: Dict[str, List[str]], max_chunk_size: int = 2000
+    ) -> Dict[str, List[MinimalSource]]:
+        start = time.time()
+        files = 0
+        self.load_index()
+        for file in paths["md_paths"]:
+            self.chunks[file] = []
+            for chunk in self.chunk_md(
+                file_path=file, max_chunk_size=max_chunk_size
+            ):
+                self.chunks[file].append(chunk)
+            files += 1
+        for file in paths["py_paths"]:
+            self.chunks[file] = []
+            for chunk in self.chunk_py(
+                file_path=file, max_chunk_size=max_chunk_size
+            ):
+                self.chunks[file].append(chunk)
+            files += 1
+        self.dump_index()
+        print(
+            f"Indexed {files} files as {len(self.chunks)} sources in {time.time() - start}s"
+        )
+
     @validate_call
     def chunk_md(
         self,
@@ -15,13 +44,14 @@ class Chunker(BaseModel):
         content: Optional[str] = None,
         sep_index: int = 0,
         sep_list: List[str] = Field(
-            min_lenght=1, default=["\n# ", "\n## ", "\n### ", "\n\n", "\n", " "]
+            min_lenght=1,
+            default=["\n# ", "\n## ", "\n### ", "\n\n", "\n", " "],
         ),
         max_chunk_size: int = Field(lt=2001, default=2000),
     ) -> List[MinimalSource] | None:
 
-        recursive_chunks = None
         chunks = []
+        recursive_chunks = None
         current_index = 0
 
         if content is None:
@@ -95,8 +125,8 @@ class Chunker(BaseModel):
         content: Optional[str] = None,
         max_chunk_size: int = Field(lt=2001, default=2000),
     ) -> List[MinimalSource]:
-        chunks = []
 
+        chunks = []
         if content is None:
             with open(file_path, "r") as f:
                 content = f.read()
@@ -105,7 +135,6 @@ class Chunker(BaseModel):
 
         try:
             tree = ast.parse(content)
-#            print(ast.dump(tree, indent=4))
         except SyntaxError:
             return self.chunk_md(
                 file_path=file_path,
@@ -170,24 +199,24 @@ class Chunker(BaseModel):
                 raise Exception("what")
         if buffer.content:
             chunks.append(buffer)
-#       for chunk in chunks:
-#           print("============CHUNK START============")
-#           print(chunk.file_path)
-#           print(
-#               f"start:{chunk.first_character_index}\nend:{chunk.last_character_index}\nlen:{chunk.last_character_index - chunk.first_character_index}\n\ncontent:\n{chunk.content}"
-#           )
-#           print("============CHUNK END============")
-#           input()
         return chunks
 
     def dump_index(
         self,
-        sources: List[MinimalSource],
-        file_path: str = "data/processed/index.jsonl",
+        file_path: str = "data/processed/index.json",
     ) -> None:
 
         os.makedirs(os.path.dirname(file_path), exist_ok=True)
 
         with open(file_path, "w") as f:
-            for source in sources:
-                f.write(source.model_dump_json() + "\n")
+            f.write(self.model_dump_json())
+
+    def load_index(
+        self, file_path: str = "data/processed/index.json"
+    ) -> Dict[str, List[MinimalSource]]:
+        try:
+            with open(file_path, "r") as f:
+                content = Chunker.model_validate_json(f.read())
+                self.chunks = content.chunks
+        except FileNotFoundError:
+            return
