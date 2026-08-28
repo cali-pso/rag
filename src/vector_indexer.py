@@ -6,8 +6,7 @@ import faiss
 from sentence_transformers import SentenceTransformer
 from src.models import MinimalSource
 
-MODEL_NAME = "all-MiniLM-L6-v2"
-OPENVINO_FILE_NAME = "openvino/openvino_model.xml"
+MODEL_NAME = "./openvino/openvino_weight_only_int8_quantized"
 FAISS_INDEX = "data/processed/faiss_index.bin"
 FAISS_SOURCES = "data/processed/faiss_sources.json"
 
@@ -20,18 +19,23 @@ class VectorIndexer:
         Parameters:
             model_name (str): HuggingFace model identifier for sentence embeddings.
         """
-        self.model: SentenceTransformer = SentenceTransformer(
-            model_name,
-            backend="openvino",
-            model_kwargs={"file_name": OPENVINO_FILE_NAME,
-                          "device": "CPU",
-                          "ov_config": {
-                              "INFERENCE_PRECISION_HINT": "f32",
-                              "NUM_STREAMS": "1",
-                              "PERFORMANCE_HINT": "THROUGHPUT",
-                              "ENABLE_CPU_PINNING": "YES"}
-                          },
+        # 1. Initialize the new weight-only model
+        self.model = SentenceTransformer(MODEL_NAME, backend="openvino")
+
+        # 2. Extract the OpenVINO model and force static shapes
+        # (Assumes batch_size=128 and max_seq_length=256)
+        ov_model = self.model[0].auto_model.model
+        ov_model.reshape(
+            {
+                "input_ids": [128, 256],
+                "attention_mask": [128, 256],
+                "token_type_ids": [128, 256],
+            }
         )
+
+        # 3. Recompile the model to lock the graph into CPU memory
+        self.model[0].auto_model.compile()
+
         self.model.max_seq_length = 256
         self.dimension: int = self.model.get_embedding_dimension()
         self.index: faiss.IndexFlatIP = faiss.IndexFlatIP(self.dimension)
