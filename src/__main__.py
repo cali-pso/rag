@@ -4,6 +4,7 @@ import fire
 import hashlib
 from typing import Dict, List
 from src.chunker import LexicalIndexer, load_index
+from src.vector_indexer import VectorIndexer
 from src.bm25retriever import BM25Retriever
 from src.models import IndexCache
 
@@ -63,12 +64,24 @@ def index(max_chunk_size: int = 2000) -> None:
     start = time.time()
     cache = load_cache()
     paths, updated_cache = sort_files("data", cache)
+    all_paths = paths["md_paths"] + paths["py_paths"]
+    file_names = [s.split('/')[-1] for s in paths]
 
-    chunker = LexicalIndexer()
-    chunker.create_index(paths)
+    lexical_indexer = LexicalIndexer()
+    lexical_indexer.create_index(paths)
+    sources_dict = lexical_indexer.chunks
+    sources = []
+    for file in sources_dict.keys():
+        if file in all_paths:
+            for source in sources_dict[file]:
+                sources.append(source)
+
+    vector_indexer = VectorIndexer()
+    vector_indexer.create_index(sources)
+    vector_indexer.save()
 
     save_cache(cache)
-    print(f"Indexed {len(chunker.chunks)} in {time.time() - start}s")
+    print(f"Indexed {len(lexical_indexer.chunks)} in {time.time() - start}s")
 
 
 def search(query: str, k: int = 10) -> None:
