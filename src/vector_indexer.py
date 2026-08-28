@@ -7,6 +7,8 @@ from sentence_transformers import SentenceTransformer
 from src.models import MinimalSource
 
 MODEL_NAME = "./openvino/openvino_weight_only_int8_quantized"
+BATCH_SIZE = 16
+MAX_SEQ_LENGTH = 128
 FAISS_INDEX = "data/processed/faiss_index.bin"
 FAISS_SOURCES = "data/processed/faiss_sources.json"
 
@@ -20,23 +22,37 @@ class VectorIndexer:
             model_name (str): HuggingFace model identifier for sentence embeddings.
         """
         # 1. Initialize the new weight-only model
-        self.model = SentenceTransformer(MODEL_NAME, backend="openvino")
+        self.model = SentenceTransformer(
+            MODEL_NAME,
+            backend="openvino",
+            model_kwargs={
+                "device": "CPU",
+                "ov_config": {
+                    "INFERENCE_NUM_THREADS": str(os.cpu_count())
+                    if os.cpu_count() is not None
+                    else "4",
+                    "NUM_STREAMS": "1",
+                    "PERFORMANCE_HINT": "THROUGHPUT",
+                    "ENABLE_CPU_PINNING": "YES",
+                },
+            },
+        )
 
         # 2. Extract the OpenVINO model and force static shapes
         # (Assumes batch_size=128 and max_seq_length=256)
         ov_model = self.model[0].auto_model.model
         ov_model.reshape(
             {
-                "input_ids": [128, 256],
-                "attention_mask": [128, 256],
-                "token_type_ids": [128, 256],
+                "input_ids": [BATCH_SIZE, MAX_SEQ_LENGTH],
+                "attention_mask": [BATCH_SIZE, MAX_SEQ_LENGTH],
+                "token_type_ids": [BATCH_SIZE, MAX_SEQ_LENGTH],
             }
         )
 
         # 3. Recompile the model to lock the graph into CPU memory
         self.model[0].auto_model.compile()
 
-        self.model.max_seq_length = 256
+        self.model.max_seq_length = MAX_SEQ_LENGTH
         self.dimension: int = self.model.get_embedding_dimension()
         self.index: faiss.IndexFlatIP = faiss.IndexFlatIP(self.dimension)
         self.sources: List[MinimalSource] = []
@@ -46,7 +62,7 @@ class VectorIndexer:
         #    pass
 
     def create_index(
-        self, chunks: List[MinimalSource], batch_size: int = 128
+        self, chunks: List[MinimalSource], batch_size: int = BATCH_SIZE
     ) -> None:
         """Encodes chunks into dense vectors and adds them to FAISS index"""
         if not chunks:
