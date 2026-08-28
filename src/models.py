@@ -1,5 +1,5 @@
 from pydantic import BaseModel
-from typing import Dict
+from typing import Dict, List
 
 
 class MinimalSource(BaseModel):
@@ -11,3 +11,13 @@ class MinimalSource(BaseModel):
 
 class IndexCache(BaseModel):
     file_hashes: Dict[str, str] = {}
+
+
+class MinimalSearchResults(BaseModel):
+    question_id: str
+    question: str
+    retrieved_sources: List[MinimalSource]
+
+
+class MinimalAnswer(MinimalSearchResults):
+    answer: str

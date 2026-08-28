@@ -16,12 +16,11 @@ FAISS_SOURCES = "data/processed/faiss_sources.json"
 class VectorIndexer:
     def __init__(self, model_name: str = MODEL_NAME) -> None:
         """
-        Initializes the sentence transformer model and the underlying FAISS index.
+        Initializes a custom model and the underlying FAISS index.
 
         Parameters:
             model_name (str): HuggingFace model identifier for sentence embeddings.
         """
-        # 1. Initialize the new weight-only model
         self.model = SentenceTransformer(
             MODEL_NAME,
             backend="openvino",
@@ -37,9 +36,8 @@ class VectorIndexer:
                 },
             },
         )
-
-        # 2. Extract the OpenVINO model and force static shapes
-        # (Assumes batch_size=128 and max_seq_length=256)
+        self.model.max_seq_length = MAX_SEQ_LENGTH
+        # Force static shape and lock model into CPU memory
         ov_model = self.model[0].auto_model.model
         ov_model.reshape(
             {
@@ -48,18 +46,13 @@ class VectorIndexer:
                 "token_type_ids": [BATCH_SIZE, MAX_SEQ_LENGTH],
             }
         )
-
-        # 3. Recompile the model to lock the graph into CPU memory
         self.model[0].auto_model.compile()
 
-        self.model.max_seq_length = MAX_SEQ_LENGTH
-        self.dimension: int = self.model.get_embedding_dimension()
-        self.index: faiss.IndexFlatIP = faiss.IndexFlatIP(self.dimension)
         self.sources: List[MinimalSource] = []
-        # try:
-        #    self.load()
-        # except FileNotFoundError:
-        #    pass
+        try:
+            self.load()
+        except FileNotFoundError:
+            pass
 
     def create_index(
         self, chunks: List[MinimalSource], batch_size: int = BATCH_SIZE
@@ -79,7 +72,8 @@ class VectorIndexer:
             normalize_embeddings=True,
         ).astype(np.float32)
 
-        self.index = faiss.IndexFlatIP(self.dimension)
+        dimension: int = self.model.get_embedding_dimension()
+        self.index = faiss.IndexFlatIP(dimension)
         self.index.add(embeddings)
 
     def save(

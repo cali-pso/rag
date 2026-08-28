@@ -1,17 +1,15 @@
 import os
-
-os.environ["OMP_NUM_THREADS"] = "1"
-os.environ["MKL_NUM_THREADS"] = "1"
-os.environ["OPENBLAS_NUM_THREADS"] = "1"
-
 import time
 import fire
 import hashlib
 from typing import Dict, List
-from src.chunker import LexicalIndexer, load_index
-from src.vector_indexer import VectorIndexer
+from src.lexical_indexer import load_index
 from src.bm25retriever import BM25Retriever
 from src.models import IndexCache
+
+os.environ["OMP_NUM_THREADS"] = "1"
+os.environ["MKL_NUM_THREADS"] = "1"
+os.environ["OPENBLAS_NUM_THREADS"] = "1"
 
 LEXICAL_INDEX_PATH = "data/processed/lexical_index.json"
 CACHE_PATH = "data/processed/index_cache.json"
@@ -66,11 +64,13 @@ def sort_files(
 
 
 def index(max_chunk_size: int = 2000) -> None:
+    from src.lexical_indexer import LexicalIndexer
+    from src.vector_indexer import VectorIndexer
+
     start = time.time()
     cache = load_cache()
     paths, updated_cache = sort_files("data", cache)
     all_paths = paths["md_paths"] + paths["py_paths"]
-    file_names = [s.split('/')[-1] for s in paths]
 
     lexical_indexer = LexicalIndexer()
     lexical_indexer.create_index(paths)
