@@ -7,7 +7,7 @@ from sentence_transformers import SentenceTransformer
 from src.models import MinimalSource
 
 MODEL_NAME = "all-MiniLM-L6-v2"
-OPENVINO_FILE_NAME = "openvino/openvino_model_qint8_quantized.xml"
+OPENVINO_FILE_NAME = "openvino/openvino_model.xml"
 FAISS_INDEX = "data/processed/faiss_index.bin"
 FAISS_SOURCES = "data/processed/faiss_sources.json"
 
@@ -23,8 +23,16 @@ class VectorIndexer:
         self.model: SentenceTransformer = SentenceTransformer(
             model_name,
             backend="openvino",
-            model_kwargs={"file_name": OPENVINO_FILE_NAME},
+            model_kwargs={"file_name": OPENVINO_FILE_NAME,
+                          "device": "CPU",
+                          "ov_config": {
+                              "INFERENCE_PRECISION_HINT": "f32",
+                              "NUM_STREAMS": "1",
+                              "PERFORMANCE_HINT": "THROUGHPUT",
+                              "ENABLE_CPU_PINNING": "YES"}
+                          },
         )
+        self.model.max_seq_length = 256
         self.dimension: int = self.model.get_embedding_dimension()
         self.index: faiss.IndexFlatIP = faiss.IndexFlatIP(self.dimension)
         self.sources: List[MinimalSource] = []
@@ -34,7 +42,7 @@ class VectorIndexer:
         #    pass
 
     def create_index(
-        self, chunks: List[MinimalSource], batch_size: int = 16
+        self, chunks: List[MinimalSource], batch_size: int = 128
     ) -> None:
         """Encodes chunks into dense vectors and adds them to FAISS index"""
         if not chunks:
