@@ -45,22 +45,27 @@ def sort_files(
 ) -> (Dict[str, List[str]], IndexCache):
     md_paths = []
     py_paths = []
+    present_paths = set()
 
     for root, _, files in os.walk(root_path):
         for file in files:
+            full_path = os.path.join(root, file)
             if file.endswith(".md"):
-                full_path = os.path.join(root, file)
                 current_hash = get_file_hash(full_path)
                 if cache.file_hashes.get(full_path) != current_hash:
                     cache.file_hashes[full_path] = current_hash
                     md_paths.append(full_path)
             elif file.endswith(".py"):
-                full_path = os.path.join(root, file)
                 current_hash = get_file_hash(full_path)
                 if cache.file_hashes.get(full_path) != current_hash:
                     cache.file_hashes[full_path] = current_hash
                     py_paths.append(full_path)
-    return {"md_paths": md_paths, "py_paths": py_paths}, cache
+            present_paths.add(full_path)
+    cached_paths = set(cache.file_hashes.keys())
+    deleted_paths = cached_paths.difference(present_paths)
+    for file in deleted_paths:
+        cache.file_hashes.pop(file)
+    return {"md_paths": md_paths, "py_paths": py_paths}, deleted_paths
 
 
 def index(max_chunk_size: int = 2000) -> None:
@@ -69,11 +74,11 @@ def index(max_chunk_size: int = 2000) -> None:
 
     start = time.time()
     cache = load_cache()
-    paths, updated_cache = sort_files("data", cache)
+    paths, deleted_paths = sort_files("data/raw", cache)
     all_paths = paths["md_paths"] + paths["py_paths"]
 
     lexical_indexer = LexicalIndexer()
-    lexical_indexer.create_index(paths)
+    lexical_indexer.create_index(paths, deleted_paths)
     sources_dict = lexical_indexer.chunks
     sources = []
     for file in sources_dict.keys():
@@ -82,7 +87,7 @@ def index(max_chunk_size: int = 2000) -> None:
                 sources.append(source)
 
     vector_indexer = VectorIndexer()
-    vector_indexer.create_index(sources)
+    vector_indexer.create_index(sources, deleted_paths)
     vector_indexer.save()
 
     save_cache(cache)

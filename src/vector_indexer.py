@@ -1,6 +1,6 @@
 import os
 import json
-from typing import List
+from typing import List, Set
 import numpy as np
 import faiss
 from sentence_transformers import SentenceTransformer
@@ -52,29 +52,49 @@ class VectorIndexer:
         try:
             self.load()
         except FileNotFoundError:
-            pass
+            dimension: int = self.model.get_embedding_dimension()
+            base_index = faiss.IndexFlatIP(dimension)
+            self.index = faiss.IndexIDMap(base_index)
 
     def create_index(
-        self, chunks: List[MinimalSource], batch_size: int = BATCH_SIZE
+        self,
+        chunks: List[MinimalSource],
+        deleted_paths: Set[str],
+        batch_size: int = BATCH_SIZE,
     ) -> None:
         """Encodes chunks into dense vectors and adds them to FAISS index"""
-        if not chunks:
+        if not chunks and not deleted_paths:
             return
 
-        self.sources = chunks
-        texts: List[str] = [c.content for c in chunks]
+        updated_files = set(c.file_path for c in chunks)
+        ids_to_remove = [
+            s.faiss_custom_id
+            for s in self.sources
+            if s.file_path in updated_files or s.file_path in deleted_paths
+        ]
 
-        embeddings: np.ndarray = self.model.encode(
-            texts,
-            batch_size=batch_size,
-            show_progress_bar=True,
-            convert_to_numpy=True,
-            normalize_embeddings=True,
-        ).astype(np.float32)
+        if ids_to_remove:
+            self.index.remove_ids(np.array(ids_to_remove, dtype=np.int64))
+            self.sources = [
+                s for s in self.sources if s.file_path not in updated_files
+            ]
 
-        dimension: int = self.model.get_embedding_dimension()
-        self.index = faiss.IndexFlatIP(dimension)
-        self.index.add(embeddings)
+        if chunks:
+            self.sources.extend(chunks)
+            texts: List[str] = [c.content for c in chunks]
+            new_ids: List[int] = np.array(
+                [c.faiss_custom_id for c in chunks], dtype=np.int64
+            )
+
+            embeddings: np.ndarray = self.model.encode(
+                texts,
+                batch_size=batch_size,
+                show_progress_bar=True,
+                convert_to_numpy=True,
+                normalize_embeddings=True,
+            ).astype(np.float32)
+
+            self.index.add_with_ids(embeddings, new_ids)
 
     def save(
         self, index_path: str = FAISS_INDEX, sources_path: str = FAISS_SOURCES

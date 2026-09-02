@@ -1,7 +1,7 @@
 import ast
 import re
 import os
-from typing import List, Optional, Dict
+from typing import List, Optional, Dict, Set
 from pydantic import BaseModel, Field, validate_call
 from src.models import MinimalSource
 from src.errors import ErrorChunking
@@ -14,10 +14,10 @@ class LexicalIndexer(BaseModel):
 
     @validate_call
     def create_index(
-        self, paths: Dict[str, List[str]], max_chunk_size: int = 2000
+            self, paths: Dict[str, List[str]], deleted_paths: Set[str], max_chunk_size: int = 2000
     ) -> Dict[str, List[MinimalSource]]:
         files = 0
-        self.chunks = load_index()
+        self.chunks = load_index(deleted_paths)
         for file in paths["md_paths"]:
             self.chunks[file] = []
             for chunk in self.chunk_md(
@@ -210,11 +210,11 @@ class LexicalIndexer(BaseModel):
 
 
 def load_index(
-    file_path: str = LEXICAL_INDEX_PATH,
+        deleted_paths: Set[str], file_path: str = LEXICAL_INDEX_PATH,
 ) -> Optional[Dict[str, List[MinimalSource]]]:
     try:
         with open(file_path, "r") as f:
             content = LexicalIndexer.model_validate_json(f.read())
-            return content.chunks
+            return {k: v for k, v in content.chunks.items() if k not in deleted_paths}
     except FileNotFoundError:
         return {}
