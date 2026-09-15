@@ -7,6 +7,15 @@ from src.models import MinimalSource
 from src.errors import ErrorChunking
 
 LEXICAL_INDEX_PATH = "data/processed/lexical_index.json"
+PY_FALLBACK_SEP_LIST = [
+    "\nclass ",
+    "\ndef ",
+    "\nfor ",
+    "\n\n\n",
+    "\n\n",
+    "\n",
+    " ",
+]
 
 
 class LexicalIndexer(BaseModel):
@@ -134,21 +143,11 @@ class LexicalIndexer(BaseModel):
         max_chunk_size: int = Field(lt=2001, default=2000),
     ) -> List[MinimalSource]:
 
-        chunks = []
         if content is None:
             with open(file_path, "r") as f:
                 content = f.read()
 
         lines = content.splitlines(keepends=True)
-        fallback_sep_list = [
-            "\nclass ",
-            "\ndef ",
-            "\nfor ",
-            "\n\n\n",
-            "\n\n",
-            "\n",
-            " ",
-        ]
 
         try:
             tree = ast.parse(content)
@@ -156,7 +155,7 @@ class LexicalIndexer(BaseModel):
             return self.chunk_md(
                 file_path=file_path,
                 content=content,
-                sep_list=fallback_sep_list,
+                sep_list=PY_FALLBACK_SEP_LIST,
                 max_chunk_size=max_chunk_size,
             )
 
@@ -164,18 +163,43 @@ class LexicalIndexer(BaseModel):
         for line in lines:
             line_offsets.append(line_offsets[-1] + len(line))
 
+        return self._chunk_ast_nodes(
+            tree.body, lines, line_offsets, file_path, max_chunk_size, 0
+        )
+
+    def _chunk_ast_nodes(
+        self,
+        nodes: List[ast.stmt],
+        lines: List[str],
+        line_offsets: List[int],
+        file_path: str,
+        max_chunk_size: int,
+        region_start_line: int,
+    ) -> List[MinimalSource]:
+        """Chunks a run of sibling AST statements, covering every character
+        from region_start_line to the last node's end with no gaps: any
+        blank lines, comments or decorators preceding a node are folded
+        into that node's own text instead of being dropped.
+
+        An oversized class/function recurses into its own body (accurate
+        line-based offsets, no risk of splitting mid-identifier); any
+        other oversized node falls back to text-based splitting.
+        """
+        chunks = []
         buffer_content = ""
         buffer_start = -1
         buffer_end = 0
+        cursor_line = region_start_line
 
-        for node in tree.body:
-            start_line = node.lineno - 1
+        for node in nodes:
             end_line = node.end_lineno
             assert end_line is not None
-            node_start = line_offsets[start_line]
+            node_region_start_line = cursor_line
+            node_start = line_offsets[node_region_start_line]
             node_end = line_offsets[end_line]
+            node_text = "".join(lines[node_region_start_line:end_line])
+            cursor_line = end_line
 
-            node_text = "".join(lines[start_line:end_line])
             if len(node_text) > max_chunk_size:
                 if buffer_content:
                     chunks.append(
@@ -188,13 +212,30 @@ class LexicalIndexer(BaseModel):
                     )
                     buffer_content = ""
                     buffer_start = -1
-                chunks = chunks + self.chunk_md(
-                    file_path=file_path,
-                    content=node_text,
-                    sep_list=fallback_sep_list,
-                    max_chunk_size=max_chunk_size,
-                    offset=node_start,
+                nested_body = (
+                    node.body
+                    if isinstance(
+                        node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)
+                    )
+                    else None
                 )
+                if nested_body:
+                    chunks = chunks + self._chunk_ast_nodes(
+                        nested_body,
+                        lines,
+                        line_offsets,
+                        file_path,
+                        max_chunk_size,
+                        node_region_start_line,
+                    )
+                else:
+                    chunks = chunks + self.chunk_md(
+                        file_path=file_path,
+                        content=node_text,
+                        sep_list=PY_FALLBACK_SEP_LIST,
+                        max_chunk_size=max_chunk_size,
+                        offset=node_start,
+                    )
             elif len(buffer_content) + len(node_text) < max_chunk_size:
                 if buffer_start == -1:
                     buffer_start = node_start

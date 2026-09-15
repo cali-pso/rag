@@ -2,13 +2,19 @@ import os
 import json
 from typing import List, Set
 import numpy as np
+import openvino as ov
 import faiss
 from sentence_transformers import SentenceTransformer
 from src.models import MinimalSource
 
 MODEL_NAME = "./openvino/openvino_weight_only_int8_quantized"
 BATCH_SIZE = 16
-MAX_SEQ_LENGTH = 128
+# all-MiniLM-L6-v2 (and this quantized export of it) was fine-tuned with a
+# 256-token max sequence length; beyond that, embeddings degrade even though
+# the architecture's position embeddings go up to 512. 256 tokens covers a
+# 2000-character chunk far better than the previous 128 without running the
+# model outside the regime it was trained on.
+MAX_SEQ_LENGTH = 256
 FAISS_INDEX = "data/processed/faiss_index.bin"
 FAISS_SOURCES = "data/processed/faiss_sources.json"
 
@@ -37,13 +43,24 @@ class VectorIndexer:
             },
         )
         self.model.max_seq_length = MAX_SEQ_LENGTH
-        # Force static shape and lock model into CPU memory
+        # Fix the batch dimension (sentence-transformers pads a short final
+        # batch to match) but leave the sequence dimension bounded-dynamic:
+        # a batch of short chunks is tokenized and run at its own actual
+        # length instead of always paying for MAX_SEQ_LENGTH, while a batch
+        # containing full-size chunks can still use up to the full ceiling.
         ov_model = self.model[0].auto_model.model
+        # openvino's .pyi stub doesn't declare these (they only exist on the
+        # compiled _pyopenvino extension re-exported at runtime).
+        seq_dim = ov.Dimension(1, MAX_SEQ_LENGTH)  # type: ignore[attr-defined]
         ov_model.reshape(
             {
-                "input_ids": [BATCH_SIZE, MAX_SEQ_LENGTH],
-                "attention_mask": [BATCH_SIZE, MAX_SEQ_LENGTH],
-                "token_type_ids": [BATCH_SIZE, MAX_SEQ_LENGTH],
+                "input_ids": ov.PartialShape([BATCH_SIZE, seq_dim]),  # type: ignore[attr-defined]
+                "attention_mask": ov.PartialShape(  # type: ignore[attr-defined]
+                    [BATCH_SIZE, seq_dim]
+                ),
+                "token_type_ids": ov.PartialShape(  # type: ignore[attr-defined]
+                    [BATCH_SIZE, seq_dim]
+                ),
             }
         )
         self.model[0].auto_model.compile()

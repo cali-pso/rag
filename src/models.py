@@ -2,7 +2,15 @@ from pydantic import BaseModel, model_validator
 from typing import Dict, List, Optional
 import os
 import hashlib
+from functools import lru_cache
 from random import random
+
+
+@lru_cache(maxsize=None)
+def _cached_mtime(file_path: str) -> float:
+    """Returns a file's mtime, memoized so repeated chunks of the same
+    file don't each pay for a separate stat() syscall."""
+    return os.path.getmtime(file_path)
 
 
 class MinimalSource(BaseModel):
@@ -15,7 +23,7 @@ class MinimalSource(BaseModel):
     @model_validator(mode="after")
     def generate_faiss_custom_id(self):
         """Generates a stable, unique 64-bit signed integer ID after init."""
-        mtime = os.path.getmtime(self.file_path)
+        mtime = _cached_mtime(self.file_path)
         index = self.first_character_index
         unique_string = (
             f"{self.file_path}_{index if index != -1 else random()}_{mtime}"
