@@ -41,14 +41,14 @@ class LexicalIndexer(BaseModel):
         content: Optional[str] = None,
         sep_index: int = 0,
         sep_list: List[str] = Field(
-            min_lenght=1,
+            min_length=1,
             default=["\n# ", "\n## ", "\n### ", "\n\n", "\n", " "],
         ),
         max_chunk_size: int = Field(lt=2001, default=2000),
-    ) -> List[MinimalSource] | None:
+        offset: int = 0,
+    ) -> List[MinimalSource]:
 
         chunks = []
-        recursive_chunks = None
         current_index = 0
 
         if content is None:
@@ -68,50 +68,61 @@ class LexicalIndexer(BaseModel):
             text_block = raw_split[i + 1]
             raw_chunks.append(separator + text_block)
 
-        buffer = MinimalSource(
-            file_path=file_path,
-            first_character_index=-1,
-            last_character_index=0,
-            content="",
-        )
+        buffer_content = ""
+        buffer_start = -1
+
         for chunk in raw_chunks:
             if len(chunk) >= max_chunk_size:
-                if buffer.content:
-                    chunks.append(buffer)
-                    buffer = MinimalSource(
-                        file_path=file_path,
-                        first_character_index=-1,
-                        last_character_index=0,
-                        content="",
+                if buffer_content:
+                    chunks.append(
+                        MinimalSource(
+                            file_path=file_path,
+                            first_character_index=buffer_start,
+                            last_character_index=buffer_start + len(buffer_content),
+                            content=buffer_content,
+                        )
                     )
+                    buffer_content = ""
+                    buffer_start = -1
+                recursive_chunks = None
                 if sep_index + 1 < len(sep_list):
                     recursive_chunks = self.chunk_md(
                         file_path=file_path,
                         content=chunk,
                         sep_index=(sep_index + 1),
+                        sep_list=sep_list,
+                        max_chunk_size=max_chunk_size,
+                        offset=offset + current_index,
                     )
                 if recursive_chunks is not None:
                     chunks = chunks + recursive_chunks
                 else:
                     raise ErrorChunking(file_path)
-            elif len(buffer.content) + len(chunk) < max_chunk_size:
-                if buffer.first_character_index == -1:
-                    buffer.first_character_index = current_index
-                    buffer.last_character_index = buffer.first_character_index
-                buffer.last_character_index += len(chunk)
-                buffer.content = buffer.content + chunk
+            elif len(buffer_content) + len(chunk) < max_chunk_size:
+                if buffer_start == -1:
+                    buffer_start = offset + current_index
+                buffer_content += chunk
             else:
-                chunks.append(buffer)
-                start = content.find(chunk, current_index)
-                buffer = MinimalSource(
-                    file_path=file_path,
-                    first_character_index=start,
-                    last_character_index=start + len(chunk),
-                    content=chunk,
+                chunks.append(
+                    MinimalSource(
+                        file_path=file_path,
+                        first_character_index=buffer_start,
+                        last_character_index=buffer_start + len(buffer_content),
+                        content=buffer_content,
+                    )
                 )
+                buffer_content = chunk
+                buffer_start = offset + current_index
             current_index += len(chunk)
-        if buffer.content:
-            chunks.append(buffer)
+        if buffer_content:
+            chunks.append(
+                MinimalSource(
+                    file_path=file_path,
+                    first_character_index=buffer_start,
+                    last_character_index=buffer_start + len(buffer_content),
+                    content=buffer_content,
+                )
+            )
 
         return chunks
 
@@ -129,6 +140,15 @@ class LexicalIndexer(BaseModel):
                 content = f.read()
 
         lines = content.splitlines(keepends=True)
+        fallback_sep_list = [
+            "\nclass ",
+            "\ndef ",
+            "\nfor ",
+            "\n\n\n",
+            "\n\n",
+            "\n",
+            " ",
+        ]
 
         try:
             tree = ast.parse(content)
@@ -136,66 +156,71 @@ class LexicalIndexer(BaseModel):
             return self.chunk_md(
                 file_path=file_path,
                 content=content,
-                sep_list=["class", "def", "for", "\n\n\n", "\n\n", "\n", " "],
+                sep_list=fallback_sep_list,
                 max_chunk_size=max_chunk_size,
             )
 
-        buffer = MinimalSource(
-            file_path=file_path,
-            first_character_index=-1,
-            last_character_index=0,
-            content="",
-        )
+        line_offsets = [0]
+        for line in lines:
+            line_offsets.append(line_offsets[-1] + len(line))
+
+        buffer_content = ""
+        buffer_start = -1
+        buffer_end = 0
 
         for node in tree.body:
             start_line = node.lineno - 1
             end_line = node.end_lineno
+            assert end_line is not None
+            node_start = line_offsets[start_line]
+            node_end = line_offsets[end_line]
 
             node_text = "".join(lines[start_line:end_line])
             if len(node_text) > max_chunk_size:
-                if buffer.content:
-                    chunks.append(buffer)
-                    buffer = MinimalSource(
-                        file_path=file_path,
-                        first_character_index=-1,
-                        last_character_index=0,
-                        content="",
+                if buffer_content:
+                    chunks.append(
+                        MinimalSource(
+                            file_path=file_path,
+                            first_character_index=buffer_start,
+                            last_character_index=buffer_end,
+                            content=buffer_content,
+                        )
                     )
+                    buffer_content = ""
+                    buffer_start = -1
                 chunks = chunks + self.chunk_md(
                     file_path=file_path,
                     content=node_text,
-                    sep_list=[
-                        "class",
-                        "def",
-                        "for",
-                        "\n\n\n",
-                        "\n\n",
-                        "\n",
-                        " ",
-                    ],
+                    sep_list=fallback_sep_list,
                     max_chunk_size=max_chunk_size,
+                    offset=node_start,
                 )
-            elif len(buffer.content) + len(node_text) < max_chunk_size:
-                if buffer.first_character_index == -1:
-                    buffer.first_character_index = sum(
-                        len(line) for line in lines[:start_line]
-                    )
-                    buffer.last_character_index = buffer.first_character_index
-                buffer.content = buffer.content + node_text
-                buffer.last_character_index += len(node_text)
-            elif len(buffer.content) + len(node_text) >= max_chunk_size:
-                chunks.append(buffer)
-                start = sum(len(line) for line in lines[:start_line])
-                buffer = MinimalSource(
-                    file_path=file_path,
-                    first_character_index=start,
-                    last_character_index=start + len(node_text),
-                    content=node_text,
-                )
+            elif len(buffer_content) + len(node_text) < max_chunk_size:
+                if buffer_start == -1:
+                    buffer_start = node_start
+                buffer_content += node_text
+                buffer_end = node_end
             else:
-                raise Exception("what")
-        if buffer.content:
-            chunks.append(buffer)
+                chunks.append(
+                    MinimalSource(
+                        file_path=file_path,
+                        first_character_index=buffer_start,
+                        last_character_index=buffer_end,
+                        content=buffer_content,
+                    )
+                )
+                buffer_content = node_text
+                buffer_start = node_start
+                buffer_end = node_end
+        if buffer_content:
+            chunks.append(
+                MinimalSource(
+                    file_path=file_path,
+                    first_character_index=buffer_start,
+                    last_character_index=buffer_end,
+                    content=buffer_content,
+                )
+            )
         return chunks
 
     def dump_index(
