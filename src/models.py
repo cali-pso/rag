@@ -1,6 +1,7 @@
-from pydantic import BaseModel, model_validator
+from pydantic import BaseModel, model_validator, Field
 from typing import Dict, List, Optional
 import os
+import uuid
 import hashlib
 from functools import lru_cache
 from random import random
@@ -37,8 +38,18 @@ class MinimalSource(BaseModel):
         return self
 
 
-class IndexCache(BaseModel):
-    file_hashes: Dict[str, str] = {}
+class UnansweredQuestion(BaseModel):
+    question_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    question: str
+
+
+class AnsweredQuestion(UnansweredQuestion):
+    sources: List[MinimalSource]
+    answer: str
+
+
+class RagDataset(BaseModel):
+    rag_questions: List[AnsweredQuestion | UnansweredQuestion]
 
 
 class MinimalSearchResults(BaseModel):
@@ -49,3 +60,17 @@ class MinimalSearchResults(BaseModel):
 
 class MinimalAnswer(MinimalSearchResults):
     answer: str
+
+
+class StudentSearchResults(BaseModel):
+    search_results: List[MinimalSearchResults]
+    k: int
+
+
+class StudentSearchResultsAndAnswer(BaseModel):
+    search_results: List[MinimalAnswer]
+    k: int
+
+
+class IndexCache(BaseModel):
+    file_hashes: Dict[str, str] = {}

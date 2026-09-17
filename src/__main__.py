@@ -5,13 +5,16 @@ import hashlib
 from typing import Dict, List
 from src.lexical_indexer import load_index
 from src.bm25retriever import BM25Retriever
-from src.models import IndexCache
+from src.models import IndexCache, UnansweredQuestion, MinimalSearchResults
 
 os.environ["OMP_NUM_THREADS"] = "1"
 os.environ["MKL_NUM_THREADS"] = "1"
 os.environ["OPENBLAS_NUM_THREADS"] = "1"
 
 LEXICAL_INDEX_PATH = "data/processed/lexical_index.json"
+SINGLE_QUERY_RESULT_PATH = (
+    "data/output/search_results/single_query/search_results.json"
+)
 CACHE_PATH = "data/processed/index_cache.json"
 
 
@@ -95,20 +98,26 @@ def index(max_chunk_size: int = 2000) -> None:
 
 
 def search(query: str, k: int = 10) -> None:
+    question = UnansweredQuestion(question=query)
     start = time.time()
     retriever = BM25Retriever()
-    sources_dict = load_index()
+    cache = load_cache()
+    _, deleted_paths = sort_files("data/raw", cache)
+    sources_dict = load_index(deleted_paths)
     sources = []
     for file in sources_dict:
         for source in sources_dict[file]:
             sources.append(source)
     retriever.fit(sources)
-    answer = retriever.search(query, k)
-    for source in answer:
-        print(source)
-        print()
-        print()
-    print(f"Retrieved {k} sources in {time.time() - start}s")
+    answer = retriever.search(question.question, k)
+    search_result = MinimalSearchResults(
+        question_id=question.question_id,
+        question=question.question,
+        retrieved_sources=answer,
+    )
+    os.makedirs(os.path.dirname(SINGLE_QUERY_RESULT_PATH), exist_ok=True)
+    with open(SINGLE_QUERY_RESULT_PATH, "w") as f:
+        f.write(search_result.model_dump_json())
 
 
 if __name__ == "__main__":
