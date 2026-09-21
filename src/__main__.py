@@ -10,6 +10,7 @@ from src.models import (
     UnansweredQuestion,
     MinimalSearchResults,
     StudentSearchResults,
+    RagDataset,
 )
 
 os.environ["OMP_NUM_THREADS"] = "1"
@@ -19,6 +20,9 @@ os.environ["OPENBLAS_NUM_THREADS"] = "1"
 LEXICAL_INDEX_PATH = "data/processed/lexical_index.json"
 SINGLE_QUERY_RESULT_PATH = (
     "data/output/search_results/single_query/search_results.json"
+)
+BATCH_QUERY_RESULT_PATH = (
+    "data/output/search_results/single_query/search_dataset_results.json"
 )
 CACHE_PATH = "data/processed/index_cache.json"
 
@@ -140,33 +144,47 @@ def search(query: str, k: int = 10) -> None:
     print("Done.")
 
 
+def _load_dataset(dataset_path: str) -> RagDataset:
+    with open(dataset_path, "r") as f:
+        return RagDataset.model_validate_json(f.read())
+
+
 def search_dataset(
     dataset_path: str,
     save_directory: str,
     k: int = 10,
 ):
-    def search_single_question(
-        question: UnansweredQuestion, k: int
-    ) -> StudentSearchResults:
-        retriever = BM25Retriever()
-        cache = load_cache()
-        _, deleted_paths = sort_files("data/raw", cache)
-        sources_dict = load_index(deleted_paths)
-        sources = []
-        for file in sources_dict:
-            for source in sources_dict[file]:
-                sources.append(source)
-        retriever.fit(sources)
+    dataset = _load_dataset(dataset_path)
+    retriever = BM25Retriever()
+    cache = load_cache()
+    _, deleted_paths = sort_files("data/raw", cache)
+    sources_dict = load_index(deleted_paths)
+    sources = []
+    for file in sources_dict:
+        for source in sources_dict[file]:
+            sources.append(source)
+    retriever.fit(sources)
+    search_results = []
+    print(f"Treating {len(dataset.rag_questions)}")
+    for question in dataset.rag_questions:
         answer = retriever.search(question.question, k)
         search_result = MinimalSearchResults(
             question_id=question.question_id,
             question=question.question,
             retrieved_sources=answer,
         )
-        student_search_result = StudentSearchResults(
-            search_results=[search_result], k=k
-        )
-        return student_search_result
+        search_results.append(search_result)
+    student_search_results = StudentSearchResults(
+        search_results=search_results, k=k
+    )
+    print("Writing results to disk...")
+    os.makedirs(
+        os.path.dirname(save_directory + "/student_search_results.json"),
+        exist_ok=True,
+    )
+    with open(save_directory + "/student_search_results.json", "w") as f:
+        f.write(student_search_results.model_dump_json())
+    print("Done.")
 
 
 if __name__ == "__main__":
