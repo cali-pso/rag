@@ -5,7 +5,12 @@ import hashlib
 from typing import Dict, List
 from src.lexical_indexer import load_index
 from src.bm25retriever import BM25Retriever
-from src.models import IndexCache, UnansweredQuestion, MinimalSearchResults
+from src.models import (
+    IndexCache,
+    UnansweredQuestion,
+    MinimalSearchResults,
+    StudentSearchResults,
+)
 
 os.environ["OMP_NUM_THREADS"] = "1"
 os.environ["MKL_NUM_THREADS"] = "1"
@@ -75,11 +80,14 @@ def index(max_chunk_size: int = 2000) -> None:
     from src.lexical_indexer import LexicalIndexer
     from src.vector_indexer import VectorIndexer
 
+    print("Loading cache...")
     start = time.time()
     cache = load_cache()
+    print("Looking up files that need indexing...")
     paths, deleted_paths = sort_files("data/raw", cache)
     all_paths = paths["md_paths"] + paths["py_paths"]
 
+    print(f"Indexing {len(all_paths)} files...")
     lexical_indexer = LexicalIndexer()
     lexical_indexer.create_index(paths, deleted_paths)
     sources_dict = lexical_indexer.chunks
@@ -88,16 +96,22 @@ def index(max_chunk_size: int = 2000) -> None:
         if file in all_paths:
             for source in sources_dict[file]:
                 sources.append(source)
-
+    print(
+        f"Indexed as {len(sources)} chunks",
+        f"in {(time.time() - start):.3f}s.",
+    )
+    print("Building vector index from chunks...")
     vector_indexer = VectorIndexer()
     vector_indexer.create_index(sources, deleted_paths)
     vector_indexer.save()
-
+    print("Saving results...")
     save_cache(cache)
-    print(f"Indexed {len(lexical_indexer.chunks)} in {time.time() - start}s")
+    print("Done.")
+    print(f"Built lexical + semantic index in {(time.time() - start):.3f}s.")
 
 
 def search(query: str, k: int = 10) -> None:
+    print(f"Processing query: {query}")
     question = UnansweredQuestion(question=query)
     start = time.time()
     retriever = BM25Retriever()
@@ -110,14 +124,49 @@ def search(query: str, k: int = 10) -> None:
             sources.append(source)
     retriever.fit(sources)
     answer = retriever.search(question.question, k)
+    print(f"Retrieved {len(answer)} sources in {(time.time() - start):.3f}s")
     search_result = MinimalSearchResults(
         question_id=question.question_id,
         question=question.question,
         retrieved_sources=answer,
     )
+    student_search_result = StudentSearchResults(
+        search_results=[search_result], k=k
+    )
+    print("Writing results to disk...")
     os.makedirs(os.path.dirname(SINGLE_QUERY_RESULT_PATH), exist_ok=True)
     with open(SINGLE_QUERY_RESULT_PATH, "w") as f:
-        f.write(search_result.model_dump_json())
+        f.write(student_search_result.model_dump_json())
+    print("Done.")
+
+
+def search_dataset(
+    dataset_path: str,
+    save_directory: str,
+    k: int = 10,
+):
+    def search_single_question(
+        question: UnansweredQuestion, k: int
+    ) -> StudentSearchResults:
+        retriever = BM25Retriever()
+        cache = load_cache()
+        _, deleted_paths = sort_files("data/raw", cache)
+        sources_dict = load_index(deleted_paths)
+        sources = []
+        for file in sources_dict:
+            for source in sources_dict[file]:
+                sources.append(source)
+        retriever.fit(sources)
+        answer = retriever.search(question.question, k)
+        search_result = MinimalSearchResults(
+            question_id=question.question_id,
+            question=question.question,
+            retrieved_sources=answer,
+        )
+        student_search_result = StudentSearchResults(
+            search_results=[search_result], k=k
+        )
+        return student_search_result
 
 
 if __name__ == "__main__":
