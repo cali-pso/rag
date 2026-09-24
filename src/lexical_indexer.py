@@ -191,6 +191,7 @@ class LexicalIndexer(BaseModel):
         max_chunk_size: int,
         region_start_line: int,
         content: str,
+        prefix: str = "",
     ) -> List[MinimalSource]:
         """Chunks a run of sibling AST statements, covering every character
         from region_start_line to the last node's end with no gaps: any
@@ -199,13 +200,17 @@ class LexicalIndexer(BaseModel):
 
         An oversized class/function recurses into its own body (accurate
         line-based offsets, no risk of splitting mid-identifier); any
-        other oversized node falls back to text-based splitting.
+        other oversized node falls back to text-based splitting. `prefix`
+        carries the enclosing class/function signature line(s) so a
+        chunk deep inside a class still names the class it belongs to,
+        instead of only the first descendant chunk getting that context.
         """
         chunks = []
         buffer_content = ""
         buffer_start = -1
         buffer_end = 0
         cursor_line = region_start_line
+        effective_max = max(1, max_chunk_size - len(prefix))
 
         for node in nodes:
             end_line = node.end_lineno
@@ -216,14 +221,14 @@ class LexicalIndexer(BaseModel):
             node_text = "".join(lines[node_region_start_line:end_line])
             cursor_line = end_line
 
-            if len(node_text) > max_chunk_size:
+            if len(node_text) > effective_max:
                 if buffer_content:
                     chunks.append(
                         MinimalSource(
                             file_path=file_path,
                             first_character_index=buffer_start,
                             last_character_index=buffer_end,
-                            content=buffer_content,
+                            content=prefix + buffer_content,
                         )
                     )
                     buffer_content = ""
@@ -236,24 +241,56 @@ class LexicalIndexer(BaseModel):
                     else None
                 )
                 if nested_body:
+                    # Everything from this node's own region start (any
+                    # gap inherited from its parent, plus its full
+                    # signature, however many lines) up to its first body
+                    # statement becomes the header text for its children.
+                    # The recursive call's own region then starts exactly
+                    # at that first body statement, so this text is never
+                    # also captured a second time by its cursor-sweep.
+                    body_start_line = nested_body[0].lineno - 1
+                    header_text = "".join(
+                        lines[node_region_start_line:body_start_line]
+                    )
+                    new_prefix = prefix + header_text
+                    # Cap how much of the budget prefix can consume (e.g.
+                    # a long decorator + multi-line signature at every
+                    # nesting level) so effective_max below never
+                    # collapses to near-zero. Keep the tail: the
+                    # innermost, most specific context matters most.
+                    max_prefix_len = max_chunk_size // 4
+                    if len(new_prefix) > max_prefix_len:
+                        new_prefix = new_prefix[-max_prefix_len:]
                     chunks = chunks + self._chunk_ast_nodes(
                         nested_body,
                         lines,
                         line_offsets,
                         file_path,
                         max_chunk_size,
-                        node_region_start_line,
+                        body_start_line,
                         content,
+                        new_prefix,
                     )
                 else:
-                    chunks = chunks + self.chunk_md(
+                    fallback_chunks = self.chunk_md(
                         file_path=file_path,
                         content=node_text,
                         sep_list=PY_FALLBACK_SEP_LIST,
-                        max_chunk_size=max_chunk_size,
+                        max_chunk_size=effective_max,
                         offset=node_start,
                     )
-            elif len(buffer_content) + len(node_text) < max_chunk_size:
+                    if prefix:
+                        fallback_chunks = [
+                            MinimalSource(
+                                file_path=fc.file_path,
+                                first_character_index=fc.first_character_index,
+                                last_character_index=fc.last_character_index,
+                                content=prefix + fc.content,
+                            )
+                            for fc in fallback_chunks
+                        ]
+                    chunks = chunks + fallback_chunks
+            elif len(buffer_content) + len(node_text) < effective_max:
                 if buffer_start == -1:
                     buffer_start = node_start
                 buffer_content += node_text
@@ -264,11 +301,11 @@ class LexicalIndexer(BaseModel):
                         file_path=file_path,
                         first_character_index=buffer_start,
                         last_character_index=buffer_end,
-                        content=buffer_content,
+                        content=prefix + buffer_content,
                     )
                 )
                 effective_overlap = min(
-                    CHUNK_OVERLAP, max_chunk_size - len(node_text)
+                    CHUNK_OVERLAP, effective_max - len(node_text)
                 )
                 overlap_start = max(
                     buffer_start, node_start - effective_overlap
@@ -284,7 +321,7 @@ class LexicalIndexer(BaseModel):
                     file_path=file_path,
                     first_character_index=buffer_start,
                     last_character_index=buffer_end,
-                    content=buffer_content,
+                    content=prefix + buffer_content,
                 )
             )
         return chunks
