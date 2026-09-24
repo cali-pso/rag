@@ -5,6 +5,12 @@ from collections import Counter
 from typing import List, Dict
 from src.models import MinimalSource
 
+# Matches on the ORIGINAL-case text, before lowering: case information
+# is what lets camelCase boundaries be found at all, and it's gone
+# once everything is lowercased.
+_IDENTIFIER_RE = re.compile(r"[A-Za-z0-9_]+")
+_CAMEL_BOUNDARY_RE = re.compile(r"(?<=[a-z0-9])(?=[A-Z])")
+
 
 class BM25Retriever(BaseModel):
     k1: float = 1.5
@@ -17,8 +23,25 @@ class BM25Retriever(BaseModel):
     idf_cache: Dict[str, float] = {}
 
     def tokenize(self, text: str) -> List[str]:
-        """Extracts alphabetic words converted to lower"""
-        return re.findall(r"[a-z]+", text.lower())
+        """Extracts identifier-like tokens, keeping digits and
+        underscores as part of the same token so identifiers like
+        `trust_remote_code` or constants like `FP8_MIN` survive as
+        single terms. Each compound identifier is additionally indexed
+        by its snake_case/camelCase parts (Gemma2DecoderLayer ->
+        gemma2decoderlayer, gemma2, decoder, layer), so a question
+        referencing part of a name without quoting it verbatim still
+        gets partial credit."""
+        tokens: List[str] = []
+        for raw in _IDENTIFIER_RE.findall(text):
+            tokens.append(raw.lower())
+            parts: List[str] = []
+            for snake_part in raw.split("_"):
+                parts.extend(
+                    p for p in _CAMEL_BOUNDARY_RE.split(snake_part) if p
+                )
+            if len(parts) > 1:
+                tokens.extend(p.lower() for p in parts)
+        return tokens
 
     def fit(self, sources: List[MinimalSource]) -> None:
         """Precomputes lengths, frequencies and IDF for the corpus"""

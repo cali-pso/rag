@@ -70,7 +70,7 @@ class Evaluator:
         full_results: Dict[str, Dict[int, float]] = {}
         for truth, answer in self.question_pairs.values():
             q_results: Dict[int, float] = {}
-            for k in (10, 5, 3, 1):
+            for k in (10, 8, 5, 3, 1):
                 top_k = answer.retrieved_sources[:k]
                 found = 0
                 for t_source in truth.sources:

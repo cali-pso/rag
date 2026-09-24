@@ -1,6 +1,6 @@
 import os
 import json
-from typing import List, Set
+from typing import Dict, List, Set
 import numpy as np
 import openvino as ov
 import faiss
@@ -66,6 +66,7 @@ class VectorIndexer:
         self.model[0].auto_model.compile()
 
         self.sources: List[MinimalSource] = []
+        self._sources_by_id: Dict[int, MinimalSource] = {}
         try:
             self.load()
         except FileNotFoundError:
@@ -113,6 +114,62 @@ class VectorIndexer:
 
             self.index.add_with_ids(embeddings, new_ids)
 
+        self._reindex_sources()
+
+    def _reindex_sources(self) -> None:
+        """Rebuilds the faiss_custom_id -> MinimalSource lookup that
+        search() and search_batch() use to map FAISS's returned ids back
+        to sources, so it stays in sync with self.sources."""
+        self._sources_by_id = {
+            s.faiss_custom_id: s
+            for s in self.sources
+            if s.faiss_custom_id is not None
+        }
+
+    def search(self, query: str, k: int = 10) -> List[MinimalSource]:
+        """Embeds a single query and returns its top-k nearest chunks,
+        ranked closest first.
+
+        Parameters:
+            query (str): The natural-language question to search for.
+            k (int): Maximum number of sources to return.
+        """
+        return self.search_batch([query], k)[0]
+
+    def search_batch(
+        self, queries: List[str], k: int = 10
+    ) -> List[List[MinimalSource]]:
+        """Embeds many queries in one batched encode + one FAISS search
+        call, and returns each query's top-k nearest chunks in the same
+        order as `queries`.
+
+        Parameters:
+            queries (List[str]): The natural-language questions to search for.
+            k (int): Maximum number of sources to return per query.
+        """
+        if not queries or k <= 0 or self.index.ntotal == 0:
+            return [[] for _ in queries]
+
+        embeddings: np.ndarray = self.model.encode(
+            queries,
+            batch_size=BATCH_SIZE,
+            show_progress_bar=True,
+            convert_to_numpy=True,
+            normalize_embeddings=True,
+        ).astype(np.float32)
+
+        top_k = min(k, self.index.ntotal)
+        _, id_rows = self.index.search(embeddings, top_k)
+
+        return [
+            [
+                self._sources_by_id[source_id]
+                for source_id in id_row
+                if source_id != -1 and source_id in self._sources_by_id
+            ]
+            for id_row in id_rows
+        ]
+
     def save(
         self, index_path: str = FAISS_INDEX, sources_path: str = FAISS_SOURCES
     ) -> None:
@@ -139,3 +196,4 @@ class VectorIndexer:
         with open(sources_path, "r", encoding="utf-8") as f:
             raw_sources = json.load(f)
             self.sources = [MinimalSource(**item) for item in raw_sources]
+        self._reindex_sources()
