@@ -5,6 +5,7 @@ import hashlib
 from typing import Dict, List
 from src.lexical_indexer import load_index
 from src.bm25retriever import BM25Retriever
+from src.evaluator import Evaluator
 from src.models import (
     IndexCache,
     UnansweredQuestion,
@@ -185,6 +186,10 @@ def search_dataset(
     with open(save_directory + "/student_search_results.json", "w") as f:
         f.write(student_search_results.model_dump_json())
     print("Done.")
+
+def evaluate_student_search_results(answer_path: str, truth_path: str) -> None:
+    evaluator = Evaluator()
+    print(evaluator.calculate_recall_at_k(answer_path, truth_path))
 
 
 if __name__ == "__main__":

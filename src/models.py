@@ -18,7 +18,7 @@ class MinimalSource(BaseModel):
     file_path: str
     first_character_index: int
     last_character_index: int
-    content: str
+    content: str = ""
     faiss_custom_id: Optional[int] = None
 
     @model_validator(mode="after")
