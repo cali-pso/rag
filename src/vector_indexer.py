@@ -153,7 +153,7 @@ class VectorIndexer:
         embeddings: np.ndarray = self.model.encode(
             queries,
             batch_size=BATCH_SIZE,
-            show_progress_bar=False,
+            show_progress_bar=True,
             convert_to_numpy=True,
             normalize_embeddings=True,
         ).astype(np.float32)

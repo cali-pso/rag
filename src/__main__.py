@@ -5,6 +5,8 @@ import hashlib
 from typing import Dict, List
 from src.lexical_indexer import load_index
 from src.bm25retriever import BM25Retriever
+from src.vector_indexer import VectorIndexer
+from src.hybrid_retriever import HybridRetriever
 from src.evaluator import Evaluator
 from src.models import (
     IndexCache,
@@ -119,7 +121,7 @@ def search(query: str, k: int = 10) -> None:
     print(f"Processing query: {query}")
     question = UnansweredQuestion(question=query)
     start = time.time()
-    retriever = BM25Retriever()
+    lexical_retriever = BM25Retriever()
     cache = load_cache()
     _, deleted_paths = sort_files("data/raw", cache)
     sources_dict = load_index(deleted_paths)
@@ -127,8 +129,11 @@ def search(query: str, k: int = 10) -> None:
     for file in sources_dict:
         for source in sources_dict[file]:
             sources.append(source)
-    retriever.fit(sources)
-    answer = retriever.search(question.question, k)
+    lexical_retriever.fit(sources)
+    semantic_retriever = VectorIndexer()
+    semantic_retriever.load()
+    hybrid_retriever = HybridRetriever(lexical_retriever, semantic_retriever)
+    answer = hybrid_retriever.search(question.question, k)
     print(f"Retrieved {len(answer)} sources in {(time.time() - start):.3f}s")
     search_result = MinimalSearchResults(
         question_id=question.question_id,
@@ -155,8 +160,11 @@ def search_dataset(
     save_directory: str,
     k: int = 10,
 ):
+    from src.vector_indexer import VectorIndexer
+    from src.hybrid_retriever import HybridRetriever
+
     dataset = _load_dataset(dataset_path)
-    retriever = BM25Retriever()
+    bm25 = BM25Retriever()
     cache = load_cache()
     _, deleted_paths = sort_files("data/raw", cache)
     sources_dict = load_index(deleted_paths)
@@ -164,17 +172,23 @@ def search_dataset(
     for file in sources_dict:
         for source in sources_dict[file]:
             sources.append(source)
-    retriever.fit(sources)
-    search_results = []
+    bm25.fit(sources)
+
+    vector_indexer = VectorIndexer()
+    retriever = HybridRetriever(bm25=bm25, vector_indexer=vector_indexer)
+
     print(f"Treating {len(dataset.rag_questions)}")
-    for question in dataset.rag_questions:
-        answer = retriever.search(question.question, k)
-        search_result = MinimalSearchResults(
+    queries = [question.question for question in dataset.rag_questions]
+    batch_results = retriever.search_batch(queries, k)
+
+    search_results = [
+        MinimalSearchResults(
             question_id=question.question_id,
             question=question.question,
             retrieved_sources=answer,
         )
-        search_results.append(search_result)
+        for question, answer in zip(dataset.rag_questions, batch_results)
+    ]
     student_search_results = StudentSearchResults(
         search_results=search_results, k=k
     )
@@ -186,6 +200,7 @@ def search_dataset(
     with open(save_directory + "/student_search_results.json", "w") as f:
         f.write(student_search_results.model_dump_json())
     print("Done.")
+
 
 def evaluate_student_search_results(answer_path: str, truth_path: str) -> None:
     evaluator = Evaluator()
