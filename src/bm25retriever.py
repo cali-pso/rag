@@ -17,8 +17,11 @@ class BM25Retriever(BaseModel):
     idf_cache: Dict[str, float] = {}
 
     def tokenize(self, text: str) -> List[str]:
-        """Extracts alphabetic words converted to lower"""
-        return re.findall(r"[a-z]+", text.lower())
+        """Extracts lowercased words, keeping digits and underscores as
+        part of the same token so identifiers like `trust_remote_code`
+        or constants like `FP8_MIN` survive as single terms instead of
+        being split apart or having their digits silently dropped."""
+        return re.findall(r"[a-z0-9_]+", text.lower())
 
     def fit(self, sources: List[MinimalSource]) -> None:
         """Precomputes lengths, frequencies and IDF for the corpus"""
