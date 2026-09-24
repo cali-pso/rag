@@ -23,6 +23,18 @@ PY_FALLBACK_SEP_LIST = [
 ]
 
 
+def _snap_forward_to_word_start(text: str, pos: int, limit: int) -> int:
+    """Advances pos to the next word-start boundary (preceded by
+    whitespace) at or before limit, so an overlap window never begins
+    mid-identifier. Only ever moves forward (shrinking the overlap),
+    so it can't push a chunk over its size budget. Falls back to
+    `limit` (zero overlap for this transition) if no boundary exists
+    anywhere in the window."""
+    while pos < limit and not (pos == 0 or text[pos - 1].isspace()):
+        pos += 1
+    return pos
+
+
 class LexicalIndexer(BaseModel):
     chunks: Dict[str, List[MinimalSource]] = {}
 
@@ -132,6 +144,9 @@ class LexicalIndexer(BaseModel):
                 )
                 overlap_local_start = max(
                     finished_local_start, new_local_start - effective_overlap
+                )
+                overlap_local_start = _snap_forward_to_word_start(
+                    content, overlap_local_start, new_local_start
                 )
                 buffer_content = (
                     content[overlap_local_start:new_local_start] + chunk
@@ -260,7 +275,12 @@ class LexicalIndexer(BaseModel):
                     # innermost, most specific context matters most.
                     max_prefix_len = max_chunk_size // 4
                     if len(new_prefix) > max_prefix_len:
-                        new_prefix = new_prefix[-max_prefix_len:]
+                        cut = _snap_forward_to_word_start(
+                            new_prefix,
+                            len(new_prefix) - max_prefix_len,
+                            len(new_prefix),
+                        )
+                        new_prefix = new_prefix[cut:]
                     chunks = chunks + self._chunk_ast_nodes(
                         nested_body,
                         lines,
@@ -309,6 +329,9 @@ class LexicalIndexer(BaseModel):
                 )
                 overlap_start = max(
                     buffer_start, node_start - effective_overlap
+                )
+                overlap_start = _snap_forward_to_word_start(
+                    content, overlap_start, node_start
                 )
                 buffer_content = (
                     content[overlap_start:node_start] + node_text
