@@ -3,6 +3,7 @@ import hashlib
 from typing import Dict, List
 from src.models import (
     IndexCache,
+    RagDataset,
 )
 
 CACHE_PATH = "data/processed/index_cache.json"
