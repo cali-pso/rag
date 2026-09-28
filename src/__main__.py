@@ -6,6 +6,7 @@ from src.bm25retriever import BM25Retriever
 from src.vector_indexer import VectorIndexer
 from src.hybrid_retriever import HybridRetriever
 from src.evaluator import Evaluator
+from src.oracle import Oracle
 from src.utils import load_cache, save_cache, sort_files, load_dataset
 from src.models import (
     UnansweredQuestion,
@@ -139,6 +140,17 @@ def search_dataset(
     with open(save_directory + "/student_search_results.json", "w") as f:
         f.write(student_search_results.model_dump_json())
     print("Done.")
+
+
+def answer(student_search_results_path: str, save_directory: str) -> None:
+    with open(student_search_results_path, "r") as f:
+        student_search_results = StudentSearchResults.model_validate_json(
+            f.read()
+        )
+    model = Oracle()
+    model.build_prompt(student_search_results)
+    answer = MinimalAnswer(answer=model.answer())
+    pass
 
 
 def evaluate_student_search_results(answer_path: str, truth_path: str) -> None:
