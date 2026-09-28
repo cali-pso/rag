@@ -691,6 +691,7 @@ dependencies = [
     { name = "sentence-transformers", extra = ["openvino"] },
     { name = "torch", version = "2.13.0", source = { registry = "https://download.pytorch.org/whl/cpu" }, marker = "sys_platform == 'darwin'" },
     { name = "torch", version = "2.13.0+cpu", source = { registry = "https://download.pytorch.org/whl/cpu" }, marker = "sys_platform != 'darwin'" },
+    { name = "transformers" },
 ]
 
 [package.metadata]
@@ -700,6 +701,7 @@ requires-dist = [
     { name = "pydantic", specifier = ">=2.13.4" },
     { name = "sentence-transformers", extras = ["openvino"] },
     { name = "torch" },
+    { name = "transformers" },
 ]
 
 [[package]]
