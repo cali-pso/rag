@@ -12,6 +12,7 @@ from src.models import (
     UnansweredQuestion,
     MinimalSearchResults,
     StudentSearchResults,
+    MinimalAnswer,
 )
 
 os.environ["OMP_NUM_THREADS"] = "1"
@@ -148,8 +149,27 @@ def answer(student_search_results_path: str, save_directory: str) -> None:
             f.read()
         )
     model = Oracle()
-    model.build_prompt(student_search_results)
-    answer = MinimalAnswer(answer=model.answer())
+    result = student_search_results.search_results[0]
+    answer = MinimalAnswer(
+        answer=model.answer(student_search_results.search_results[0]),
+        question_id=result.question_id,
+        question=result.question,
+        retrieved_sources=result.retrieved_sources,
+    )
+    print(answer.answer)
+    pass
+
+
+def answer_dataset(
+    student_search_results_path: str, save_directory: str
+) -> None:
+    with open(student_search_results_path, "r") as f:
+        student_search_results = StudentSearchResults.model_validate_json(
+            f.read()
+        )
+    model = Oracle()
+    answer_batch = model.answer_batch(student_search_results.search_results)
+    print(answer_batch)
     pass
 
 

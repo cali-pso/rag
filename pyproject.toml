@@ -13,6 +13,7 @@ dependencies = [
     "pydantic>=2.13.4",
     "sentence-transformers[openvino]",
     "torch",
+    "tqdm>=4.66.5",
 ]
 
 [[tool.uv.index]]

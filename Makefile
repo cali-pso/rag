@@ -36,7 +36,7 @@ eval_docs:
 
 clean:
 	rm -rf __pycache__ .mypy_cache .pytest_cache
-	rm -rf data/processed/
+	rm -rf data/processed/ data/output
 	find . -type d -name "__pycache__" -exec rm -rf {} +
 
 fclean: clean
