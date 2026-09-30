@@ -120,10 +120,24 @@ class LexicalIndexer(BaseModel):
                         max_chunk_size=max_chunk_size,
                         offset=offset + current_index,
                     )
-                if recursive_chunks is not None:
-                    chunks = chunks + recursive_chunks
                 else:
+                    # No separator left (e.g. a long URL or base64 blob):
+                    # cut it into fixed-width slices so an oversized token
+                    # never aborts the whole indexing run.
+                    step = max_chunk_size - 1
+                    recursive_chunks = [
+                        MinimalSource(
+                            file_path=file_path,
+                            first_character_index=offset + current_index + i,
+                            last_character_index=offset + current_index + i
+                            + len(chunk[i:i + step]),
+                            content=chunk[i:i + step],
+                        )
+                        for i in range(0, len(chunk), step)
+                    ]
+                if not recursive_chunks:
                     raise ErrorChunking(file_path)
+                chunks = chunks + recursive_chunks
             elif len(buffer_content) + len(chunk) < max_chunk_size:
                 if buffer_start == -1:
                     buffer_start = offset + current_index
@@ -316,14 +330,17 @@ class LexicalIndexer(BaseModel):
                 buffer_content += node_text
                 buffer_end = node_end
             else:
-                chunks.append(
-                    MinimalSource(
-                        file_path=file_path,
-                        first_character_index=buffer_start,
-                        last_character_index=buffer_end,
-                        content=prefix + buffer_content,
+                # A node exactly effective_max long lands here with an
+                # empty buffer (buffer_start still -1): nothing to flush.
+                if buffer_content:
+                    chunks.append(
+                        MinimalSource(
+                            file_path=file_path,
+                            first_character_index=buffer_start,
+                            last_character_index=buffer_end,
+                            content=prefix + buffer_content,
+                        )
                     )
-                )
                 effective_overlap = min(
                     CHUNK_OVERLAP, effective_max - len(node_text)
                 )
