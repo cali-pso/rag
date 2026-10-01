@@ -29,10 +29,14 @@ search_docs:
 		--save_directory data/output/search_results/UnansweredQuestions
 
 eval_code:
-	$(RUN) evaluate_student_search_results --answer_path data/output/search_results/UnansweredQuestions/student_search_results.json --truth_path data/datasets/AnsweredQuestions/dataset_code_public.json
+	$(RUN) evaluate \
+		--student_search_results_path data/output/search_results/UnansweredQuestions/dataset_code_public.json \
+		--dataset_path data/datasets/AnsweredQuestions/dataset_code_public.json
 
 eval_docs:
-	$(RUN) evaluate_student_search_results --answer_path data/output/search_results/UnansweredQuestions/student_search_results.json --truth_path data/datasets/AnsweredQuestions/dataset_docs_public.json
+	$(RUN) evaluate \
+		--student_search_results_path data/output/search_results/UnansweredQuestions/dataset_docs_public.json \
+		--dataset_path data/datasets/AnsweredQuestions/dataset_docs_public.json
 
 clean:
 	rm -rf __pycache__ .mypy_cache .pytest_cache

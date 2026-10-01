@@ -74,3 +74,4 @@ class StudentSearchResultsAndAnswer(BaseModel):
 
 class IndexCache(BaseModel):
     file_hashes: Dict[str, str] = {}
+    max_chunk_size: Optional[int] = None
