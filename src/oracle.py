@@ -48,8 +48,8 @@ class Oracle:
             {
                 "role": "user",
                 "content": (
-                    f"Context:\n{context}\n\n",
-                    f"Question: {result.question}",
+                    f"Context:\n{context}\n\n"
+                    f"Question: {result.question}"
                 ),
             },
         ]
