@@ -40,7 +40,10 @@ class LexicalIndexer(BaseModel):
 
     @validate_call
     def create_index(
-            self, paths: Dict[str, List[str]], deleted_paths: Set[str], max_chunk_size: int = 2000
+        self,
+        paths: Dict[str, List[str]],
+        deleted_paths: Set[str],
+        max_chunk_size: int = 2000,
     ) -> Dict[str, List[MinimalSource]]:
         files = 0
         self.chunks = load_index(deleted_paths)
@@ -104,7 +107,8 @@ class LexicalIndexer(BaseModel):
                         MinimalSource(
                             file_path=file_path,
                             first_character_index=buffer_start,
-                            last_character_index=buffer_start + len(buffer_content),
+                            last_character_index=buffer_start
+                            + len(buffer_content),
                             content=buffer_content,
                         )
                     )
@@ -129,9 +133,11 @@ class LexicalIndexer(BaseModel):
                         MinimalSource(
                             file_path=file_path,
                             first_character_index=offset + current_index + i,
-                            last_character_index=offset + current_index + i
-                            + len(chunk[i:i + step]),
-                            content=chunk[i:i + step],
+                            last_character_index=offset
+                            + current_index
+                            + i
+                            + len(chunk[i : i + step]),
+                            content=chunk[i : i + step],
                         )
                         for i in range(0, len(chunk), step)
                     ]
@@ -148,7 +154,8 @@ class LexicalIndexer(BaseModel):
                     MinimalSource(
                         file_path=file_path,
                         first_character_index=buffer_start,
-                        last_character_index=buffer_start + len(buffer_content),
+                        last_character_index=buffer_start
+                        + len(buffer_content),
                         content=buffer_content,
                     )
                 )
@@ -208,7 +215,13 @@ class LexicalIndexer(BaseModel):
             line_offsets.append(line_offsets[-1] + len(line))
 
         return self._chunk_ast_nodes(
-            tree.body, lines, line_offsets, file_path, max_chunk_size, 0, content
+            tree.body,
+            lines,
+            line_offsets,
+            file_path,
+            max_chunk_size,
+            0,
+            content,
         )
 
     def _chunk_ast_nodes(
@@ -265,7 +278,8 @@ class LexicalIndexer(BaseModel):
                 nested_body = (
                     node.body
                     if isinstance(
-                        node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)
+                        node,
+                        (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef),
                     )
                     else None
                 )
@@ -350,9 +364,7 @@ class LexicalIndexer(BaseModel):
                 overlap_start = _snap_forward_to_word_start(
                     content, overlap_start, node_start
                 )
-                buffer_content = (
-                    content[overlap_start:node_start] + node_text
-                )
+                buffer_content = content[overlap_start:node_start] + node_text
                 buffer_start = overlap_start
                 buffer_end = node_end
         if buffer_content:
@@ -378,11 +390,16 @@ class LexicalIndexer(BaseModel):
 
 
 def load_index(
-        deleted_paths: Set[str], file_path: str = LEXICAL_INDEX_PATH,
+    deleted_paths: Set[str],
+    file_path: str = LEXICAL_INDEX_PATH,
 ) -> Optional[Dict[str, List[MinimalSource]]]:
     try:
         with open(file_path, "r") as f:
             content = LexicalIndexer.model_validate_json(f.read())
-            return {k: v for k, v in content.chunks.items() if k not in deleted_paths}
+            return {
+                k: v
+                for k, v in content.chunks.items()
+                if k not in deleted_paths
+            }
     except FileNotFoundError:
         return {}

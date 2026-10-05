@@ -52,17 +52,15 @@ class VectorIndexer:
         # openvino's .pyi stub doesn't declare these (they only exist on the
         # compiled _pyopenvino extension re-exported at runtime).
         seq_dim = ov.Dimension(1, MAX_SEQ_LENGTH)  # type: ignore[attr-defined]
-        ov_model.reshape(
-            {
-                "input_ids": ov.PartialShape([BATCH_SIZE, seq_dim]),  # type: ignore[attr-defined]
-                "attention_mask": ov.PartialShape(  # type: ignore[attr-defined]
-                    [BATCH_SIZE, seq_dim]
-                ),
-                "token_type_ids": ov.PartialShape(  # type: ignore[attr-defined]
-                    [BATCH_SIZE, seq_dim]
-                ),
-            }
-        )
+        ov_model.reshape({
+            "input_ids": ov.PartialShape([BATCH_SIZE, seq_dim]),  # type: ignore[attr-defined]
+            "attention_mask": ov.PartialShape(  # type: ignore[attr-defined]
+                [BATCH_SIZE, seq_dim]
+            ),
+            "token_type_ids": ov.PartialShape(  # type: ignore[attr-defined]
+                [BATCH_SIZE, seq_dim]
+            ),
+        })
         self.model[0].auto_model.compile()
 
         self.sources: List[MinimalSource] = []
@@ -153,7 +151,7 @@ class VectorIndexer:
         embeddings: np.ndarray = self.model.encode(
             queries,
             batch_size=BATCH_SIZE,
-            show_progress_bar=True,
+            show_progress_bar=False,
             convert_to_numpy=True,
             normalize_embeddings=True,
         ).astype(np.float32)

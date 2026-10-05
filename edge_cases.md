@@ -66,10 +66,16 @@ def _cli(func: Callable[..., None]) -> Callable[..., None]:
         except KeyboardInterrupt:
             print("Interrupted.", file=sys.stderr)
             sys.exit(130)
-        except (OSError, ValueError, ValidationError,
-                ErrorChunking, UnknownQuestionID) as e:
+        except (
+            OSError,
+            ValueError,
+            ValidationError,
+            ErrorChunking,
+            UnknownQuestionID,
+        ) as e:
             print(f"Error: {e}", file=sys.stderr)
             sys.exit(1)
+
     return wrapper
 ```
 
