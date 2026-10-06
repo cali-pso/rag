@@ -1,16 +1,32 @@
 import os
+from pathlib import Path
 from typing import List
 import torch
 from transformers import AutoTokenizer, AutoModelForCausalLM
+from optimum.intel import OVModelForCausalLM, OVWeightQuantizationConfig
 from src.models import MinimalSearchResults
 
 MODEL_NAME = "Qwen/Qwen3-0.6B"
-MAX_NEW_TOKENS = 256
+QWEN_OV_DIR = Path("data/models/qwen3-0.6b-ov-int8")
+MAX_NEW_TOKENS = 128
 SYSTEM_PROMPT = (
     "Answer the question using the provided context. If the "
     "context does not relate to the answer, say so explicitly. Be "
-    "concise and factual."
+    "concise and factual, answer in 2-3 phrases."
 )
+
+
+def load_qwen() -> OVModelForCausalLM:
+    if not (QWEN_OV_DIR / "openvino_model.xml").exists():
+        model = OVModelForCausalLM.from_pretrained(
+            MODEL_NAME,
+            export=True,
+            quantization_config=OVWeightQuantizationConfig(bits=8),
+        )
+        model.save_pretrained(QWEN_OV_DIR)
+    return OVModelForCausalLM.from_pretrained(
+        QWEN_OV_DIR, ov_config={"PERFORMANCE_HINT": "LATENCY"}
+    )
 
 
 class Oracle:
@@ -31,17 +47,13 @@ class Oracle:
         # sliced out at one fixed offset across the whole batch.
         self.tokenizer.padding_side = "left"
 
-        self.model = AutoModelForCausalLM.from_pretrained(
-            model_name,
-            dtype=torch.float32,
-            low_cpu_mem_usage=True,
-        )
+        self.model = load_qwen()
         self.model.eval()
 
     def _build_conversation(self, result: MinimalSearchResults) -> List[dict]:
         context = "\n\n".join(
             f"[{source.file_path}]\n{source.content}"
-            for source in result.retrieved_sources
+            for source in result.retrieved_sources[:3]
         )
         return [
             {"role": "system", "content": SYSTEM_PROMPT},

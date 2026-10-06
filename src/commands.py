@@ -28,7 +28,7 @@ MIN_CHUNK_SIZE = 100
 # Questions sent to the model per generate() call: every prompt in a
 # batch is padded to the longest one, so large batches of ~5k-token
 # prompts blow up memory on a CPU-only machine.
-ANSWER_BATCH_SIZE = 8
+ANSWER_BATCH_SIZE = 1
 
 
 def _write_json(save_directory: str, file_name: str, json_str: str) -> str:
