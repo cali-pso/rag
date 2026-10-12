@@ -1,16 +1,27 @@
 import os
 import json
+import shutil
+from pathlib import Path
 from typing import Dict, List, Set
 import numpy as np
 import openvino as ov
 import faiss
+from optimum.intel import OVWeightQuantizationConfig
 from sentence_transformers import SentenceTransformer
 from pydantic import ValidationError
 from src.errors import CorruptedIndex
 from src.models import MinimalSource
 
-MODEL_NAME = "./openvino/openvino_weight_only_int8_quantized"
+EMBED_MODEL_NAME = "sentence-transformers/all-MiniLM-L6-v2"
+EMBED_OV_DIR = Path("data/models/all-minilm-l6-v2-ov-int8")
 BATCH_SIZE = 16
+# Only these chunks get a vector; BM25 still indexes everything. On the
+# public questions, semantic search on code chunks bought ~1 point of
+# code recall (questions quote identifiers, which BM25 matches exactly)
+# for ~95% of the indexing time, while on docs it is what lifts recall@5
+# from 0.78 to 0.83. Embedding the 847 docs chunks instead of all 16.5k
+# brings the semantic pass from ~6 min down to ~20 s.
+SEMANTIC_EXTENSIONS = (".md",)
 # all-MiniLM-L6-v2 (and this quantized export of it) was fine-tuned with a
 # 256-token max sequence length; beyond that, embeddings degrade even though
 # the architecture's position embeddings go up to 512. 256 tokens covers a
@@ -21,17 +32,40 @@ FAISS_INDEX = "data/processed/faiss_index.bin"
 FAISS_SOURCES = "data/processed/faiss_sources.json"
 
 
-class VectorIndexer:
-    def __init__(self, model_name: str = MODEL_NAME) -> None:
-        """
-        Initializes a custom model and the underlying FAISS index.
+def export_embedder() -> None:
+    """Downloads all-MiniLM-L6-v2, quantizes its weights to int8 with
+    OpenVINO and saves it under EMBED_OV_DIR, unless already done.
 
-        Parameters:
-            model_name (str): HuggingFace model identifier for sentence
-                embeddings.
-        """
+    The export is written to a temporary directory and only renamed into
+    place once complete, so an interrupted first run is redone on the
+    next one instead of leaving a half-written model behind.
+    """
+    if (EMBED_OV_DIR / "modules.json").exists():
+        return
+    print("Exporting the embedding model (first run only)...")
+    tmp_dir = EMBED_OV_DIR.with_name(EMBED_OV_DIR.name + ".tmp")
+    shutil.rmtree(tmp_dir, ignore_errors=True)
+    model = SentenceTransformer(
+        EMBED_MODEL_NAME,
+        backend="openvino",
+        model_kwargs={
+            # The Hub repo ships two OpenVINO files: start from the
+            # full-precision one and quantize it ourselves.
+            "file_name": "openvino/openvino_model.xml",
+            "quantization_config": OVWeightQuantizationConfig(bits=8),
+        },
+    )
+    model.save(str(tmp_dir))
+    os.replace(tmp_dir, EMBED_OV_DIR)
+
+
+class VectorIndexer:
+    def __init__(self) -> None:
+        """Loads the quantized embedding model (exporting it on first use)
+        and the saved FAISS index, or starts an empty one."""
+        export_embedder()
         self.model = SentenceTransformer(
-            MODEL_NAME,
+            str(EMBED_OV_DIR),
             backend="openvino",
             model_kwargs={
                 "device": "CPU",
@@ -52,19 +86,11 @@ class VectorIndexer:
         # length instead of always paying for MAX_SEQ_LENGTH, while a batch
         # containing full-size chunks can still use up to the full ceiling.
         ov_model = self.model[0].auto_model.model
-        # openvino's .pyi stub doesn't declare these (they only exist on the
-        # compiled _pyopenvino extension re-exported at runtime).
-        seq_dim = ov.Dimension(1, MAX_SEQ_LENGTH)  # type: ignore[attr-defined]
+        seq_dim = ov.Dimension(1, MAX_SEQ_LENGTH)
         ov_model.reshape({
-            "input_ids": ov.PartialShape(  # type: ignore[attr-defined]
-                [BATCH_SIZE, seq_dim]
-            ),
-            "attention_mask": ov.PartialShape(  # type: ignore[attr-defined]
-                [BATCH_SIZE, seq_dim]
-            ),
-            "token_type_ids": ov.PartialShape(  # type: ignore[attr-defined]
-                [BATCH_SIZE, seq_dim]
-            ),
+            "input_ids": ov.PartialShape([BATCH_SIZE, seq_dim]),
+            "attention_mask": ov.PartialShape([BATCH_SIZE, seq_dim]),
+            "token_type_ids": ov.PartialShape([BATCH_SIZE, seq_dim]),
         })
         self.model[0].auto_model.compile()
 
@@ -86,7 +112,18 @@ class VectorIndexer:
         deleted_paths: Set[str],
         batch_size: int = BATCH_SIZE,
     ) -> None:
-        """Encodes chunks into dense vectors and adds them to FAISS index"""
+        """Encodes the chunks of SEMANTIC_EXTENSIONS files into dense
+        vectors and adds them to the FAISS index, after removing the
+        vectors of updated and deleted files.
+
+        Args:
+            chunks: Chunks of new or modified files; others are ignored.
+            deleted_paths: Previously indexed files that no longer exist.
+            batch_size: Chunks encoded per model call.
+        """
+        chunks = [
+            c for c in chunks if c.file_path.endswith(SEMANTIC_EXTENSIONS)
+        ]
         if not chunks and not deleted_paths:
             return
 
