@@ -62,7 +62,7 @@ class Oracle:
     ) -> List[Dict[str, str]]:
         context = "\n\n".join(
             f"[{source.file_path}]\n{source.content}"
-            for source in result.retrieved_sources
+            for source in result.retrieved_sources[:5]
         )
         return [
             {"role": "system", "content": SYSTEM_PROMPT},
