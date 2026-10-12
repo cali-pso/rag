@@ -6,4 +6,4 @@ app = Flask("rag_http_api")
 
 @app.route("/index", methods=["POST"])
 def http_api_index():
-    return index(request.form["max_chunk_size"])
+    return index(int(request.form["max_chunk_size"]))
