@@ -150,8 +150,8 @@ class LexicalIndexer(BaseModel):
                             last_character_index=offset
                             + current_index
                             + i
-                            + len(chunk[i : i + step]),
-                            content=chunk[i : i + step],
+                            + len(chunk[i:i + step]),
+                            content=chunk[i:i + step],
                         )
                         for i in range(0, len(chunk), step)
                     ]

@@ -314,7 +314,7 @@ def answer_dataset(
     answers = []
     with tqdm(total=len(results), desc="Answering") as progress:
         for i in range(0, len(results), ANSWER_BATCH_SIZE):
-            batch = results[i : i + ANSWER_BATCH_SIZE]
+            batch = results[i:i + ANSWER_BATCH_SIZE]
             for result, text in zip(batch, model.answer_batch(batch)):
                 answers.append(
                     MinimalAnswer(

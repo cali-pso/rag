@@ -27,7 +27,8 @@ class VectorIndexer:
         Initializes a custom model and the underlying FAISS index.
 
         Parameters:
-            model_name (str): HuggingFace model identifier for sentence embeddings.
+            model_name (str): HuggingFace model identifier for sentence
+                embeddings.
         """
         self.model = SentenceTransformer(
             MODEL_NAME,
@@ -55,7 +56,9 @@ class VectorIndexer:
         # compiled _pyopenvino extension re-exported at runtime).
         seq_dim = ov.Dimension(1, MAX_SEQ_LENGTH)  # type: ignore[attr-defined]
         ov_model.reshape({
-            "input_ids": ov.PartialShape([BATCH_SIZE, seq_dim]),  # type: ignore[attr-defined]
+            "input_ids": ov.PartialShape(  # type: ignore[attr-defined]
+                [BATCH_SIZE, seq_dim]
+            ),
             "attention_mask": ov.PartialShape(  # type: ignore[attr-defined]
                 [BATCH_SIZE, seq_dim]
             ),
@@ -67,6 +70,9 @@ class VectorIndexer:
 
         self.sources: List[MinimalSource] = []
         self._sources_by_id: Dict[int, MinimalSource] = {}
+        # An IndexIDMap at runtime, but faiss.read_index() is declared as
+        # returning the base class, which is all the methods used need.
+        self.index: faiss.Index
         try:
             self.load()
         except FileNotFoundError:
@@ -92,7 +98,10 @@ class VectorIndexer:
         ]
 
         if ids_to_remove:
-            self.index.remove_ids(np.array(ids_to_remove, dtype=np.int64))
+            # faiss's Python wrapper builds the IDSelector from an id
+            # array itself; its stub only declares the IDSelector form.
+            stale_ids = np.array(ids_to_remove, dtype=np.int64)
+            self.index.remove_ids(stale_ids)  # type: ignore[arg-type]
             self.sources = [
                 s
                 for s in self.sources

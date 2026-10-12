@@ -45,7 +45,8 @@ class HybridRetriever:
             vector_indexer (VectorIndexer): An already-loaded semantic index.
             rrf_constant (int): The RRF rank-damping constant.
             lexical_weight (float): Contribution multiplier for BM25 ranks.
-            semantic_weight (float): Contribution multiplier for semantic ranks.
+            semantic_weight (float): Contribution multiplier for semantic
+                ranks.
         """
         self.bm25 = bm25
         self.vector_indexer = vector_indexer

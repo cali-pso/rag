@@ -1,6 +1,5 @@
 from pathlib import Path
-from typing import List
-import torch
+from typing import Dict, List
 from transformers import AutoTokenizer
 from optimum.intel import OVModelForCausalLM, OVWeightQuantizationConfig
 import openvino as ov
@@ -61,7 +60,9 @@ class Oracle:
         # Prompts reach the pipeline already templated.
         self.generation_config.apply_chat_template = False
 
-    def _build_conversation(self, result: MinimalSearchResults) -> List[dict]:
+    def _build_conversation(
+        self, result: MinimalSearchResults
+    ) -> List[Dict[str, str]]:
         context = "\n\n".join(
             f"[{source.file_path}]\n{source.content}"
             for source in result.retrieved_sources
