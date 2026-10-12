@@ -141,7 +141,7 @@ def sort_files(
     for root, _, files in os.walk(root_path):
         for file in files:
             full_path = os.path.join(root, file)
-            if file.endswith(".md"):
+            if file.endswith(".md") or file.endswith(".txt"):
                 current_hash = get_file_hash(full_path)
                 if cache.file_hashes.get(full_path) != current_hash:
                     cache.file_hashes[full_path] = current_hash
