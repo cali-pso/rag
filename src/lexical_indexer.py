@@ -2,9 +2,9 @@ import ast
 import re
 import os
 from typing import List, Optional, Dict, Set
-from pydantic import BaseModel, Field, validate_call
-from src.models import MinimalSource
-from src.errors import ErrorChunking
+from pydantic import BaseModel, Field, ValidationError, validate_call
+from src.models import MinimalSource, make_source_id
+from src.errors import CorruptedIndex, ErrorChunking
 
 LEXICAL_INDEX_PATH = "data/processed/lexical_index.json"
 # Characters repeated at the start of a new chunk from the tail of the
@@ -44,23 +44,37 @@ class LexicalIndexer(BaseModel):
         paths: Dict[str, List[str]],
         deleted_paths: Set[str],
         max_chunk_size: int = 2000,
-    ) -> Dict[str, List[MinimalSource]]:
-        files = 0
+    ) -> None:
+        """Chunks every new or modified file, merges the result with the
+        chunks of unchanged files from the previous run and saves it.
+
+        Args:
+            paths: New or modified files, under "md_paths" and "py_paths".
+            deleted_paths: Previously indexed files that no longer exist.
+            max_chunk_size: Maximum width, in characters, of a chunk.
+        """
         self.chunks = load_index(deleted_paths)
-        for file in paths["md_paths"]:
-            self.chunks[file] = []
-            for chunk in self.chunk_md(
-                file_path=file, max_chunk_size=max_chunk_size
-            ):
-                self.chunks[file].append(chunk)
-            files += 1
-        for file in paths["py_paths"]:
-            self.chunks[file] = []
-            for chunk in self.chunk_py(
-                file_path=file, max_chunk_size=max_chunk_size
-            ):
-                self.chunks[file].append(chunk)
-            files += 1
+        jobs = [(file, self.chunk_md) for file in paths["md_paths"]] + [
+            (file, self.chunk_py) for file in paths["py_paths"]
+        ]
+        for file, chunker in jobs:
+            try:
+                file_chunks = chunker(
+                    file_path=file, max_chunk_size=max_chunk_size
+                )
+            except UnicodeDecodeError:
+                # Character offsets of a lossy decode would point at the
+                # wrong text, so leave the file out rather than guess.
+                print(f"Warning: skipping {file}: not valid UTF-8.")
+                self.chunks.pop(file, None)
+                continue
+            for chunk in file_chunks:
+                chunk.faiss_custom_id = make_source_id(
+                    chunk.file_path,
+                    chunk.first_character_index,
+                    chunk.last_character_index,
+                )
+            self.chunks[file] = file_chunks
         self.dump_index()
 
     @validate_call
@@ -81,7 +95,7 @@ class LexicalIndexer(BaseModel):
         current_index = 0
 
         if content is None:
-            with open(file_path, "r") as f:
+            with open(file_path, "r", encoding="utf-8") as f:
                 content = f.read()
 
         escaped_sep = re.escape(sep_list[sep_index])
@@ -136,13 +150,15 @@ class LexicalIndexer(BaseModel):
                             last_character_index=offset
                             + current_index
                             + i
-                            + len(chunk[i : i + step]),
-                            content=chunk[i : i + step],
+                            + len(chunk[i:i + step]),
+                            content=chunk[i:i + step],
                         )
                         for i in range(0, len(chunk), step)
                     ]
                 if not recursive_chunks:
-                    raise ErrorChunking(file_path)
+                    raise ErrorChunking(
+                        f"could not split {file_path} into chunks"
+                    )
                 chunks = chunks + recursive_chunks
             elif len(buffer_content) + len(chunk) < max_chunk_size:
                 if buffer_start == -1:
@@ -195,14 +211,16 @@ class LexicalIndexer(BaseModel):
     ) -> List[MinimalSource]:
 
         if content is None:
-            with open(file_path, "r") as f:
+            with open(file_path, "r", encoding="utf-8") as f:
                 content = f.read()
 
         lines = content.splitlines(keepends=True)
 
         try:
             tree = ast.parse(content)
-        except SyntaxError:
+        except (SyntaxError, ValueError, RecursionError):
+            # Invalid Python, NUL bytes or absurdly deep nesting: the
+            # file can still be indexed as plain text.
             return self.chunk_md(
                 file_path=file_path,
                 content=content,
@@ -385,21 +403,35 @@ class LexicalIndexer(BaseModel):
 
         os.makedirs(os.path.dirname(file_path), exist_ok=True)
 
-        with open(file_path, "w") as f:
+        with open(file_path, "w", encoding="utf-8") as f:
             f.write(self.model_dump_json())
 
 
 def load_index(
     deleted_paths: Set[str],
     file_path: str = LEXICAL_INDEX_PATH,
-) -> Optional[Dict[str, List[MinimalSource]]]:
+) -> Dict[str, List[MinimalSource]]:
+    """Reads the chunks saved by the previous run, minus deleted files.
+
+    Args:
+        deleted_paths: Files to leave out of the result.
+        file_path: Where the lexical index is saved.
+
+    Returns:
+        The chunks of each file, or an empty dict if nothing was saved.
+
+    Raises:
+        CorruptedIndex: If the saved index cannot be parsed.
+    """
     try:
-        with open(file_path, "r") as f:
+        with open(file_path, "r", encoding="utf-8") as f:
             content = LexicalIndexer.model_validate_json(f.read())
-            return {
-                k: v
-                for k, v in content.chunks.items()
-                if k not in deleted_paths
-            }
     except FileNotFoundError:
         return {}
+    except (ValidationError, UnicodeDecodeError):
+        raise CorruptedIndex(
+            f"{file_path} is corrupted, run `index` again to rebuild it."
+        )
+    return {
+        k: v for k, v in content.chunks.items() if k not in deleted_paths
+    }

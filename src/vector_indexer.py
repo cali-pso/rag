@@ -5,6 +5,8 @@ import numpy as np
 import openvino as ov
 import faiss
 from sentence_transformers import SentenceTransformer
+from pydantic import ValidationError
+from src.errors import CorruptedIndex
 from src.models import MinimalSource
 
 MODEL_NAME = "./openvino/openvino_weight_only_int8_quantized"
@@ -25,7 +27,8 @@ class VectorIndexer:
         Initializes a custom model and the underlying FAISS index.
 
         Parameters:
-            model_name (str): HuggingFace model identifier for sentence embeddings.
+            model_name (str): HuggingFace model identifier for sentence
+                embeddings.
         """
         self.model = SentenceTransformer(
             MODEL_NAME,
@@ -53,7 +56,9 @@ class VectorIndexer:
         # compiled _pyopenvino extension re-exported at runtime).
         seq_dim = ov.Dimension(1, MAX_SEQ_LENGTH)  # type: ignore[attr-defined]
         ov_model.reshape({
-            "input_ids": ov.PartialShape([BATCH_SIZE, seq_dim]),  # type: ignore[attr-defined]
+            "input_ids": ov.PartialShape(  # type: ignore[attr-defined]
+                [BATCH_SIZE, seq_dim]
+            ),
             "attention_mask": ov.PartialShape(  # type: ignore[attr-defined]
                 [BATCH_SIZE, seq_dim]
             ),
@@ -65,6 +70,9 @@ class VectorIndexer:
 
         self.sources: List[MinimalSource] = []
         self._sources_by_id: Dict[int, MinimalSource] = {}
+        # An IndexIDMap at runtime, but faiss.read_index() is declared as
+        # returning the base class, which is all the methods used need.
+        self.index: faiss.Index
         try:
             self.load()
         except FileNotFoundError:
@@ -90,15 +98,21 @@ class VectorIndexer:
         ]
 
         if ids_to_remove:
-            self.index.remove_ids(np.array(ids_to_remove, dtype=np.int64))
+            # faiss's Python wrapper builds the IDSelector from an id
+            # array itself; its stub only declares the IDSelector form.
+            stale_ids = np.array(ids_to_remove, dtype=np.int64)
+            self.index.remove_ids(stale_ids)  # type: ignore[arg-type]
             self.sources = [
-                s for s in self.sources if s.file_path not in updated_files
+                s
+                for s in self.sources
+                if s.file_path not in updated_files
+                and s.file_path not in deleted_paths
             ]
 
         if chunks:
             self.sources.extend(chunks)
             texts: List[str] = [c.content for c in chunks]
-            new_ids: List[int] = np.array(
+            new_ids: np.ndarray = np.array(
                 [c.faiss_custom_id for c in chunks], dtype=np.int64
             )
 
@@ -181,17 +195,31 @@ class VectorIndexer:
 
     def load(
         self,
-        index_path: str = "data/processed/faiss_index.bin",
-        sources_path: str = "data/processed/faiss_sources.json",
+        index_path: str = FAISS_INDEX,
+        sources_path: str = FAISS_SOURCES,
     ) -> None:
-        """
-        Loads the FAISS index and the source metadata from disk.
+        """Loads the FAISS index and the source metadata from disk.
+
+        Raises:
+            FileNotFoundError: If no index was saved yet.
+            CorruptedIndex: If the saved files cannot be read back.
         """
         if not os.path.exists(index_path) or not os.path.exists(sources_path):
             raise FileNotFoundError("Vector index files missing.")
 
-        self.index = faiss.read_index(index_path)
-        with open(sources_path, "r", encoding="utf-8") as f:
-            raw_sources = json.load(f)
+        try:
+            self.index = faiss.read_index(index_path)
+        except RuntimeError:
+            raise CorruptedIndex(
+                f"{index_path} is corrupted, run `index` again to rebuild it."
+            )
+        try:
+            with open(sources_path, "r", encoding="utf-8") as f:
+                raw_sources = json.load(f)
             self.sources = [MinimalSource(**item) for item in raw_sources]
+        except (ValueError, TypeError, ValidationError):
+            raise CorruptedIndex(
+                f"{sources_path} is corrupted, run `index` again to "
+                "rebuild it."
+            )
         self._reindex_sources()

@@ -45,7 +45,8 @@ class HybridRetriever:
             vector_indexer (VectorIndexer): An already-loaded semantic index.
             rrf_constant (int): The RRF rank-damping constant.
             lexical_weight (float): Contribution multiplier for BM25 ranks.
-            semantic_weight (float): Contribution multiplier for semantic ranks.
+            semantic_weight (float): Contribution multiplier for semantic
+                ranks.
         """
         self.bm25 = bm25
         self.vector_indexer = vector_indexer
@@ -96,7 +97,7 @@ class HybridRetriever:
             query (str): The natural-language question to search for.
             k (int): Maximum number of sources to return.
         """
-        if k <= 0:
+        if k <= 0 or not query.strip():
             return []
 
         fetch_n = self._fetch_count(k)
@@ -117,14 +118,21 @@ class HybridRetriever:
             queries (List[str]): The natural-language questions to search for.
             k (int): Maximum number of sources to return per query.
         """
-        if not queries or k <= 0:
-            return [[] for _ in queries]
+        results: List[List[MinimalSource]] = [[] for _ in queries]
+        if k <= 0:
+            return results
+
+        # Blank questions keep their empty result: any vector is "close"
+        # to the embedding of nothing, so searching them returns noise.
+        positions = [i for i, query in enumerate(queries) if query.strip()]
+        if not positions:
+            return results
 
         fetch_n = self._fetch_count(k)
-        semantic_results = self.vector_indexer.search_batch(queries, fetch_n)
-
-        results = []
-        for query, semantic in zip(queries, semantic_results):
-            lexical = self.bm25.search(query, fetch_n)
-            results.append(self._fuse(lexical, semantic, k))
+        semantic_results = self.vector_indexer.search_batch(
+            [queries[i] for i in positions], fetch_n
+        )
+        for i, semantic in zip(positions, semantic_results):
+            lexical = self.bm25.search(queries[i], fetch_n)
+            results[i] = self._fuse(lexical, semantic, k)
         return results

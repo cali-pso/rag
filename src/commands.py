@@ -1,12 +1,23 @@
 import os
 import time
+from typing import Any
 from tqdm import tqdm
 from src.lexical_indexer import load_index, LEXICAL_INDEX_PATH
 from src.bm25retriever import BM25Retriever
 from src.vector_indexer import VectorIndexer, FAISS_INDEX, FAISS_SOURCES
 from src.hybrid_retriever import HybridRetriever
 from src.evaluator import Evaluator
-from src.utils import load_cache, save_cache, sort_files, load_dataset
+from src.errors import IndexNotFound, InvalidArgument
+from src.utils import (
+    as_path,
+    as_query,
+    check_k,
+    load_cache,
+    load_dataset,
+    read_json_model,
+    save_cache,
+    sort_files,
+)
 from src.models import (
     UnansweredQuestion,
     MinimalSearchResults,
@@ -25,6 +36,10 @@ SINGLE_QUERY_ANSWER_DIR = "data/output/search_results_and_answer/single_query"
 SINGLE_QUERY_FILE_NAME = "single_query.json"
 MAX_CHUNK_SIZE_LIMIT = 2000
 MIN_CHUNK_SIZE = 100
+# Bump whenever the on-disk index format changes: a mismatch with the
+# cache forces a full rebuild instead of mixing old and new chunks.
+# 2: chunk IDs derived from the chunk's span instead of the file mtime.
+INDEX_VERSION = 2
 # Questions sent to the model per generate() call: every prompt in a
 # batch is padded to the longest one, so large batches of ~5k-token
 # prompts blow up memory on a CPU-only machine.
@@ -36,17 +51,28 @@ def _write_json(save_directory: str, file_name: str, json_str: str) -> str:
     if needed, and returns the written path."""
     os.makedirs(save_directory, exist_ok=True)
     out_path = os.path.join(save_directory, file_name)
-    with open(out_path, "w") as f:
+    with open(out_path, "w", encoding="utf-8") as f:
         f.write(json_str)
     return out_path
 
 
 def _build_retriever() -> HybridRetriever:
     """Loads the persisted lexical and semantic indexes and wraps them in a
-    HybridRetriever."""
-    cache = load_cache()
-    _, deleted_paths = sort_files(RAW_DATA_PATH, cache)
-    sources_dict = load_index(deleted_paths) or {}
+    HybridRetriever.
+
+    Raises:
+        IndexNotFound: If `index` has not been run yet.
+    """
+    if not all(
+        os.path.isfile(path)
+        for path in (LEXICAL_INDEX_PATH, FAISS_INDEX, FAISS_SOURCES)
+    ):
+        raise IndexNotFound(
+            "no index found under data/processed/, run `index` first."
+        )
+    # The saved index is the snapshot of the last `index` run: files
+    # deleted since then are dropped by re-running `index`, not here.
+    sources_dict = load_index(set())
     sources = [s for file in sources_dict for s in sources_dict[file]]
     bm25 = BM25Retriever()
     bm25.fit(sources)
@@ -75,27 +101,38 @@ def index(max_chunk_size: int = MAX_CHUNK_SIZE_LIMIT) -> None:
         or not isinstance(max_chunk_size, int)
         or not MIN_CHUNK_SIZE <= max_chunk_size <= MAX_CHUNK_SIZE_LIMIT
     ):
-        print(
-            "Error: --max_chunk_size must be an integer between "
+        raise InvalidArgument(
+            "--max_chunk_size must be an integer between "
             f"{MIN_CHUNK_SIZE} and {MAX_CHUNK_SIZE_LIMIT}, "
             f"got {max_chunk_size!r}."
         )
-        return
+    if not os.path.isdir(RAW_DATA_PATH):
+        raise IndexNotFound(
+            f"corpus directory {RAW_DATA_PATH}/ not found: put the vLLM "
+            "repository there before indexing."
+        )
 
     print("Loading cache...")
     start = time.time()
     cache = load_cache()
-    if cache.max_chunk_size != max_chunk_size:
-        # Every existing chunk was cut at a different size: the per-file
-        # hashes can't tell us that, so throw away the whole index.
-        if cache.max_chunk_size is not None:
+    if (
+        cache.max_chunk_size != max_chunk_size
+        or cache.index_version != INDEX_VERSION
+    ):
+        # Every existing chunk was cut at a different size, or saved in
+        # an older format: the per-file hashes can't tell us that, so
+        # throw away the whole index.
+        if cache.max_chunk_size not in (None, max_chunk_size):
             print(
                 f"Chunk size changed ({cache.max_chunk_size} -> "
                 f"{max_chunk_size}), rebuilding the whole index..."
             )
+        elif cache.max_chunk_size is not None:
+            print("Index format changed, rebuilding the whole index...")
         _clear_index()
         cache.file_hashes = {}
         cache.max_chunk_size = max_chunk_size
+        cache.index_version = INDEX_VERSION
     print("Looking up files that need indexing...")
     paths, deleted_paths = sort_files(RAW_DATA_PATH, cache)
     all_paths = paths["md_paths"] + paths["py_paths"]
@@ -123,15 +160,17 @@ def index(max_chunk_size: int = MAX_CHUNK_SIZE_LIMIT) -> None:
     print("Ingestion complete! Indices saved under data/processed/")
 
 
-def search(query: str, k: int = 10) -> None:
-    """Retrieves the top-k sources for a single query, prints them and
-    saves them as a StudentSearchResults JSON file.
+def search(query: Any, k: Any = 10) -> None:
+    """Retrieves the top-k sources for a single query and prints them.
 
     Args:
         query: The question to search for.
         k: Number of sources to retrieve.
-        save_directory: Directory the results file is written to.
     """
+    query = as_query(query)
+    k = check_k(k)
+    if not query.strip():
+        print("Warning: empty query, nothing to search for.")
     print(f"Processing query: {query}")
     bar = tqdm(range(3))
     question = UnansweredQuestion(question=query)
@@ -139,10 +178,10 @@ def search(query: str, k: int = 10) -> None:
     bar.update(1)
     bar.refresh()
     retriever = _build_retriever()
-    bar.update(2)
+    bar.update(1)
     bar.refresh()
     sources = retriever.search(question.question, k)
-    bar.update(3)
+    bar.update(1)
     bar.refresh()
     print(f"Retrieved {len(sources)} sources in {(time.time() - start):.3f}s")
     for rank, source in enumerate(sources, start=1):
@@ -154,9 +193,9 @@ def search(query: str, k: int = 10) -> None:
 
 
 def search_dataset(
-    dataset_path: str,
-    save_directory: str,
-    k: int = 10,
+    dataset_path: Any,
+    save_directory: Any,
+    k: Any = 10,
 ) -> None:
     """Runs search over every question of a dataset and writes a
     StudentSearchResults JSON file named after the dataset file.
@@ -166,6 +205,11 @@ def search_dataset(
         save_directory: Directory the results file is written to.
         k: Number of sources to retrieve per question.
     """
+    dataset_path = as_path("dataset_path", dataset_path)
+    save_directory = as_path("save_directory", save_directory)
+    k = check_k(k)
+    # Fail on an unusable output directory now, not after the search.
+    os.makedirs(save_directory, exist_ok=True)
     dataset = load_dataset(dataset_path)
     retriever = _build_retriever()
 
@@ -193,7 +237,7 @@ def search_dataset(
 
 
 def answer(
-    query: str, k: int = 10, save_directory: str = SINGLE_QUERY_ANSWER_DIR
+    query: Any, k: Any = 10, save_directory: Any = SINGLE_QUERY_ANSWER_DIR
 ) -> None:
     """Retrieves the top-k sources for a single query, generates an answer
     from them, prints it and saves a StudentSearchResultsAndAnswer JSON
@@ -204,6 +248,15 @@ def answer(
         k: Number of sources to retrieve and pass to the model.
         save_directory: Directory the answer file is written to.
     """
+    query = as_query(query)
+    k = check_k(k)
+    save_directory = as_path("save_directory", save_directory)
+    if not query.strip():
+        print("Warning: empty query, there is nothing to answer.")
+        return
+    # Fail on an unusable output directory now, not after generation.
+    os.makedirs(save_directory, exist_ok=True)
+
     from src.oracle import Oracle
 
     print(f"Processing query: {query}")
@@ -233,7 +286,7 @@ def answer(
 
 
 def answer_dataset(
-    student_search_results_path: str, save_directory: str
+    student_search_results_path: Any, save_directory: Any
 ) -> None:
     """Generates an answer for every question of a StudentSearchResults
     file and writes a StudentSearchResultsAndAnswer JSON file with the
@@ -243,19 +296,25 @@ def answer_dataset(
         student_search_results_path: Output of search_dataset.
         save_directory: Directory the answers file is written to.
     """
+    student_search_results_path = as_path(
+        "student_search_results_path", student_search_results_path
+    )
+    save_directory = as_path("save_directory", save_directory)
+    student_search_results = read_json_model(
+        student_search_results_path, StudentSearchResults
+    )
+    # Fail on an unusable output directory now, not after generation.
+    os.makedirs(save_directory, exist_ok=True)
+
     from src.oracle import Oracle
 
-    with open(student_search_results_path, "r") as f:
-        student_search_results = StudentSearchResults.model_validate_json(
-            f.read()
-        )
     results = student_search_results.search_results
     print(f"Loaded {len(results)} questions")
     model = Oracle()
     answers = []
     with tqdm(total=len(results), desc="Answering") as progress:
         for i in range(0, len(results), ANSWER_BATCH_SIZE):
-            batch = results[i : i + ANSWER_BATCH_SIZE]
+            batch = results[i:i + ANSWER_BATCH_SIZE]
             for result, text in zip(batch, model.answer_batch(batch)):
                 answers.append(
                     MinimalAnswer(
@@ -277,7 +336,7 @@ def answer_dataset(
     print(f"Saved student_search_results_and_answer to {out_path}")
 
 
-def evaluate(student_search_results_path: str, dataset_path: str) -> None:
+def evaluate(student_search_results_path: Any, dataset_path: Any) -> None:
     """Prints recall@k of a StudentSearchResults file against a ground-truth
     AnsweredQuestions dataset.
 
@@ -285,10 +344,25 @@ def evaluate(student_search_results_path: str, dataset_path: str) -> None:
         student_search_results_path: Output of search_dataset.
         dataset_path: Ground-truth AnsweredQuestions dataset.
     """
+    student_search_results_path = as_path(
+        "student_search_results_path", student_search_results_path
+    )
+    dataset_path = as_path("dataset_path", dataset_path)
     evaluator = Evaluator()
     recalls = evaluator.calculate_recall_at_k(
         student_search_results_path, dataset_path
     )
+    if evaluator.without_sources:
+        print(
+            f"Warning: skipped {evaluator.without_sources} question(s) "
+            "without ground-truth sources (is --dataset_path an "
+            "AnsweredQuestions file?)."
+        )
+    if evaluator.unmatched:
+        print(
+            f"Warning: skipped {evaluator.unmatched} question(s) with no "
+            "matching question_id in the student results."
+        )
     print("Evaluation Results")
     print("=" * 40)
     print("  ".join(f"{name}: {value:.3f}" for name, value in recalls.items()))
