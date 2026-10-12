@@ -35,11 +35,8 @@ def load_qwen() -> og.LLMPipeline:
         ov_tokenizer, ov_detokenizer = convert_tokenizer(
             hf_tokenizer, with_detokenizer=True
         )
-        # openvino's .pyi stub doesn't declare save_model.
-        ov.save_model(  # type: ignore[attr-defined]
-            ov_tokenizer, QWEN_OV_DIR / "openvino_tokenizer.xml"
-        )
-        ov.save_model(  # type: ignore[attr-defined]
+        ov.save_model(ov_tokenizer, QWEN_OV_DIR / "openvino_tokenizer.xml")
+        ov.save_model(
             ov_detokenizer, QWEN_OV_DIR / "openvino_detokenizer.xml"
         )
         hf_tokenizer.save_pretrained(QWEN_OV_DIR)

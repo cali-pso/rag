@@ -39,7 +39,8 @@ MIN_CHUNK_SIZE = 100
 # Bump whenever the on-disk index format changes: a mismatch with the
 # cache forces a full rebuild instead of mixing old and new chunks.
 # 2: chunk IDs derived from the chunk's span instead of the file mtime.
-INDEX_VERSION = 2
+# 3: only Markdown chunks are embedded in the semantic index.
+INDEX_VERSION = 3
 # Questions sent to the model per generate() call: every prompt in a
 # batch is padded to the longest one, so large batches of ~5k-token
 # prompts blow up memory on a CPU-only machine.
@@ -150,7 +151,7 @@ def index(max_chunk_size: int = MAX_CHUNK_SIZE_LIMIT) -> None:
         f"Indexed as {len(sources)} chunks",
         f"in {(time.time() - start):.3f}s.",
     )
-    print("Building vector index from chunks...")
+    print("Building vector index from the Markdown chunks...")
     vector_indexer = VectorIndexer()
     vector_indexer.create_index(sources, deleted_paths)
     vector_indexer.save()
