@@ -230,12 +230,6 @@ class VectorIndexer:
         with open(sources_path, "w", encoding="utf-8") as f:
             json.dump(serialized_sources, f, indent=4)
 
-    def get_str(
-        self, index_path: str = FAISS_INDEX, sources_path: str = FAISS_SOURCES
-    ) -> str:
-        with open(index_path, "w", encoding="utf-8") as f:
-            return f.read()
-
     def load(
         self,
         index_path: str = FAISS_INDEX,

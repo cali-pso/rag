@@ -38,6 +38,9 @@ eval_docs:
 		--student_search_results_path data/output/search_results/UnansweredQuestions/dataset_docs_public.json \
 		--dataset_path data/datasets/AnsweredQuestions/dataset_docs_public.json
 
+server:
+	uv run flask --app src.rag_http_api run
+
 clean:
 	rm -rf __pycache__ .mypy_cache .pytest_cache
 	rm -rf data/processed/ data/output

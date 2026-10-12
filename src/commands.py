@@ -1,6 +1,6 @@
 import os
 import time
-from typing import Any
+from typing import Any, Dict
 from tqdm import tqdm
 from src.lexical_indexer import load_index, LEXICAL_INDEX_PATH
 from src.bm25retriever import BM25Retriever
@@ -88,7 +88,7 @@ def _clear_index() -> None:
             os.remove(path)
 
 
-def index(max_chunk_size: int = MAX_CHUNK_SIZE_LIMIT) -> None:
+def index(max_chunk_size: int = MAX_CHUNK_SIZE_LIMIT) -> Dict[str, str | int]:
     """Ingests data/raw/ and builds the lexical and semantic indexes under
     data/processed/.
 
@@ -160,8 +160,10 @@ def index(max_chunk_size: int = MAX_CHUNK_SIZE_LIMIT) -> None:
     print(f"Built lexical + semantic index in {(time.time() - start):.3f}s.")
     print("Ingestion complete! Indices saved under data/processed/")
     return {
-        "lexical_indexer": lexical_indexer.model_dump_json(),
-        "vector_indexer": vector_indexer.get_str(),
+        "status": "done",
+        "time_elapsed": time.time() - start,
+        "files_indexed": len(all_paths),
+        "chunks": len(sources),
     }
 
 
@@ -288,6 +290,7 @@ def answer(
         ).model_dump_json(),
     )
     print(f"Saved answer to {out_path}")
+    return minimal_answer.model_dump_json()
 
 
 def answer_dataset(
