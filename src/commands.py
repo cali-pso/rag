@@ -197,6 +197,11 @@ def search(query: Any, k: Any = 10) -> None:
             f"[{source.first_character_index}:"
             f"{source.last_character_index}]"
         )
+    return MinimalSearchResults(
+        question_id=question.question_id,
+        question=question.question,
+        retrieved_sources=sources,
+    ).model_dump_json()
 
 
 def search_dataset(
