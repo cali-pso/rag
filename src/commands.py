@@ -201,12 +201,12 @@ def search(query: Any, k: Any = 10) -> None:
         question_id=question.question_id,
         question=question.question,
         retrieved_sources=sources,
-    ).model_dump_json()
+    ).model_dump()
 
 
 def search_dataset(
     dataset_path: Any,
-    save_directory: Any,
+    save_directory: Any = "data/output/search_results/",
     k: Any = 10,
 ) -> None:
     """Runs search over every question of a dataset and writes a
@@ -295,7 +295,7 @@ def answer(
         ).model_dump_json(),
     )
     print(f"Saved answer to {out_path}")
-    return minimal_answer.model_dump_json()
+    return minimal_answer.model_dump()
 
 
 def answer_dataset(
