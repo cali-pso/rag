@@ -1,4 +1,4 @@
-*This project has been created as part of the 42 cu*This project has been created as part of the 42 curriculum by rapoggi.*
+*This project has been created as part of the 42 curriculum by rapoggi.*
 
 # RAG Against The Machine
 
@@ -734,9 +734,6 @@ with the original version, BM25 alone took ~150 ms per question, so ~30 s of the
 budget for 200 questions before even embedding anything.
 
 #### Answer generation
-
-TODO: time `answer_dataset` on the 100 docs questions and comment on answer
-quality (Qwen3-0.6B, 5 retrieved chunks as context).
 
 ## Design Decisions
 
