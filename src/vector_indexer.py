@@ -148,7 +148,7 @@ class VectorIndexer:
 
         if chunks:
             self.sources.extend(chunks)
-            texts: List[str] = [c.content for c in chunks]
+            texts: List[str] = [c.file_path + "\n" + c.content for c in chunks]
             new_ids: np.ndarray = np.array(
                 [c.faiss_custom_id for c in chunks], dtype=np.int64
             )

@@ -96,7 +96,7 @@ class BM25Retriever:
         doc_lengths = np.zeros(num_docs, dtype=np.float64)
         vocabulary = self.vocabulary
         for i, source in enumerate(self.sources):
-            tokens = self.tokenize(source.content)
+            tokens = self.tokenize(source.file_path + "\n" + source.content)
             counts = Counter(tokens)
             doc_lengths[i] = len(tokens)
             distinct_terms[i] = len(counts)
