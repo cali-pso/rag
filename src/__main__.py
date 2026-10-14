@@ -14,7 +14,7 @@ from src.commands import (
 )
 
 
-def _cli(func: Callable[..., None]) -> Callable[..., None]:
+def _cli(func: Callable[..., Any]) -> Callable[..., None]:
     """Wraps a command so that no exception ever reaches the user as a
     traceback: each one becomes a one-line message on stderr and a
     non-zero exit status. Set RAG_DEBUG=1 to get the traceback back."""

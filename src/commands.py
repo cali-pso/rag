@@ -1,6 +1,6 @@
 import os
 import time
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 from tqdm import tqdm
 from src.lexical_indexer import load_index, LEXICAL_INDEX_PATH
 from src.bm25retriever import BM25Retriever
@@ -88,7 +88,9 @@ def _clear_index() -> None:
             os.remove(path)
 
 
-def index(max_chunk_size: int = MAX_CHUNK_SIZE_LIMIT) -> Dict[str, str | int]:
+def index(
+    max_chunk_size: int = MAX_CHUNK_SIZE_LIMIT,
+) -> Dict[str, str | int | float]:
     """Ingests data/raw/ and builds the lexical and semantic indexes under
     data/processed/.
 
@@ -167,7 +169,7 @@ def index(max_chunk_size: int = MAX_CHUNK_SIZE_LIMIT) -> Dict[str, str | int]:
     }
 
 
-def search(query: Any, k: Any = 10) -> None:
+def search(query: Any, k: Any = 10) -> Dict[str, Any]:
     """Retrieves the top-k sources for a single query and prints them.
 
     Args:
@@ -250,7 +252,7 @@ def search_dataset(
 
 def answer(
     query: Any, k: Any = 10, save_directory: Any = SINGLE_QUERY_ANSWER_DIR
-) -> None:
+) -> Optional[Dict[str, Any]]:
     """Retrieves the top-k sources for a single query, generates an answer
     from them, prints it and saves a StudentSearchResultsAndAnswer JSON
     file.
@@ -265,7 +267,7 @@ def answer(
     save_directory = as_path("save_directory", save_directory)
     if not query.strip():
         print("Warning: empty query, there is nothing to answer.")
-        return
+        return None
     # Fail on an unusable output directory now, not after generation.
     os.makedirs(save_directory, exist_ok=True)
 
@@ -327,7 +329,7 @@ def answer_dataset(
     answers = []
     with tqdm(total=len(results), desc="Answering") as progress:
         for i in range(0, len(results), ANSWER_BATCH_SIZE):
-            batch = results[i : i + ANSWER_BATCH_SIZE]
+            batch = results[i:i + ANSWER_BATCH_SIZE]
             for result, text in zip(batch, model.answer_batch(batch)):
                 answers.append(
                     MinimalAnswer(
