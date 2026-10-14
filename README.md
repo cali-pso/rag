@@ -27,7 +27,8 @@ The pipeline has four stages:
 ## Instructions
 
 A Makefile is provided, and this project uses uv to manage its virtual
-environment automatically.
+environment automatically. Python 3.10 or later is required (uv downloads a
+suitable interpreter if none is installed).
 To install the dependencies needed by the project, run:
 ```bash
 make install
@@ -37,8 +38,20 @@ or
 uv sync
 ```
 
-The vLLM repository must be extracted under `data/raw/`, and the datasets under
-`data/datasets/`.
+The corpus and the datasets are not shipped with the repository. Extract the
+vLLM repository and the datasets so that the layout is:
+
+```
+data/raw/vllm-0.10.1/...                       # the indexed corpus
+data/datasets/UnansweredQuestions/*.json       # questions to search / answer
+data/datasets/AnsweredQuestions/*.json         # ground truth, for evaluate
+```
+
+For example:
+```bash
+unzip vllm-0.10.1.zip -d data/raw/
+unzip datasets_public.zip -d data/datasets/
+```
 
 To build the index, run:
 ```bash
@@ -68,6 +81,7 @@ uv run python3 -m src search_dataset \
        --k [k] \
        --save_directory [save_directory]
 ```
+`--save_directory` defaults to `data/output/search_results/`.
 
 To measure your own recall@k against a ground-truth dataset, run:
 ```bash
@@ -95,8 +109,8 @@ uv run python3 -m src answer_dataset \
 The first run downloads Qwen3-0.6B and converts it to OpenVINO, which takes a
 few minutes and needs an internet connection.
 
-To run this project as a local server and trigger indexing and answering over
-HTTP, run:
+To run this project as a local server and trigger indexing, searching and
+answering over HTTP, run:
 ```bash
 make server
 ```
@@ -105,8 +119,17 @@ or
 uv run flask --app src.rag_http_api run
 ```
 
-The exposed endpoints are `/index` and `/answer`.
-See [Example Usage](#example-usage) for more information.
+The server listens on `http://127.0.0.1:5000` and exposes three `POST`
+endpoints taking form fields:
+
+| Endpoint | Fields | Returns |
+|---|---|---|
+| `/index` | `max_chunk_size` | indexing statistics |
+| `/search` | `query`, `k` | the top-k sources (`MinimalSearchResults`) |
+| `/answer` | `query`, `k` | the answer and its sources (`MinimalAnswer`) |
+
+Invalid requests get a JSON `{"error": ...}` with status 400. See
+[Example Usage](#example-usage) and the [Bonus Part](#bonus-part).
 
 To clean the repository of all generated files, run:
 ```bash
@@ -159,8 +182,14 @@ I used Claude (Anthropic) as a reviewer and assistant during this project, for:
   measuring which chunks were worth embedding to bring indexing under 5 minutes.
 - **Learning**: guidance and documentation pointers for the HTTP API, which I
   implemented myself, and explanations of BM25 and Reciprocal Rank Fusion.
+- **Testing**: running the full correction process (exam scripts, moulinette,
+  edge cases, single-core runs) on fresh clones and benchmarking every step;
+  the robustness fixes that came out of it (prompt token budget, no answer
+  without sources, interruption-safe model export, cached models and JSON
+  errors in the HTTP API).
 - **This README**: drafting the Retrieval Method, Performance Analysis, Design
-  Decisions, Challenges Faced and Example Usage sections, which I then reviewed.
+  Decisions, Challenges Faced, Example Usage and Bonus sections, which I then
+  reviewed.
 
 Every AI suggestion was read, tested and measured on the public datasets before
 being kept.
@@ -230,15 +259,16 @@ Here is how the function builds them:
    the cache is updated.
 
 The function returns a short statistics dictionary describing what just
-happened. You only see it when the function is called through the HTTP API:
+happened (`files_indexed` and `chunks` count what was (re)indexed by this run).
+You only see it when the function is called through the HTTP API:
 
 ```json
-{"status": "done", "time_elapsed": 34.1, "files_indexed": 1941, "chunks": 16493}
+{"status": "done", "time_elapsed": 26.3, "files_indexed": 1969, "chunks": 16592}
 ```
 
 #### Search
 
-`def search(query: Any, k: Any = 10) -> None:`
+`def search(query: Any, k: Any = 10) -> Dict[str, Any]:`
 
 This function uses BM25, FAISS similarity search, and a fusion step to get the
 top-k most relevant chunks for a question. `search()` itself only validates its
@@ -252,17 +282,21 @@ based on its position in each list. BM25's opinion weighs twice as much as
 FAISS's, because its results are more reliable, especially on code questions.
 All of this is detailed in [Retrieval Method](#retrieval-method).
 
-The final ranked list is printed with each chunk's location:
+The final ranked list is printed with each chunk's location (and returned as a
+`MinimalSearchResults` dictionary for the HTTP API). For "How to configure
+OpenAI server?":
 
 ```
-1. data/raw/vllm-0.10.1/docs/features/lora.md [2071:3833]
-2. data/raw/vllm-0.10.1/tests/lora/test_transformers_model.py [1515:3341]
-3. data/raw/vllm-0.10.1/docs/features/lora.md [0:1882]
+1. data/raw/vllm-0.10.1/docs/deployment/frameworks/dstack.md [1788:3170]
+2. data/raw/vllm-0.10.1/docs/serving/openai_compatible_server.md [0:1952]
+3. data/raw/vllm-0.10.1/examples/online_serving/openai_transcription_client.py [0:1350]
+4. data/raw/vllm-0.10.1/docs/getting_started/quickstart.md [6293:8078]
+5. data/raw/vllm-0.10.1/examples/online_serving/openai_chat_completion_client_with_tools_required.py [0:566]
 ```
 
-`search_dataset()` does the same for every question of a dataset in one go
-(embedding all the questions in a single batch), and writes the results as a
-`StudentSearchResults` JSON file.
+`search_dataset()` does the same for every question of a dataset, 32 questions
+at a time behind a progress bar (each group of questions is embedded in a single
+batch), and writes the results as a `StudentSearchResults` JSON file.
 
 #### Evaluate
 
@@ -279,13 +313,13 @@ moulinette and is meant for my own testing. Recall@k is explained in
 ```python
 def answer(
     query: Any, k: Any = 10, save_directory: Any = SINGLE_QUERY_ANSWER_DIR
-) -> str:
+) -> Optional[Dict[str, Any]]:
 ```
 
 This function runs the same retrieval as `search()`, then builds a prompt from
 the 5 best retrieved chunks (the context) and the question, and sends it to
-Qwen3-0.6B. This lets the model give an informed answer about a codebase it
-has never seen. The prompt looks like this:
+Qwen3-0.6B, the default (and only) answering model. This lets the model give an
+informed answer about a codebase it has never seen. The prompt looks like this:
 
 ```
 [system] Answer the question using the provided context. If the context does
@@ -298,10 +332,23 @@ has never seen. The prompt looks like this:
          Question: How do I enable LoRA?
 ```
 
+The prompt always fits a fixed token budget, counted with Qwen's own
+tokenizer: the context is capped to 3072 tokens (sources are added best first,
+the last one truncated to fit) and the question to 256 tokens. Five sources of
+up to 2000 characters take about 2500 tokens, so a normal prompt is never cut;
+the cap only protects the CPU from pathological inputs (an 88 000-character
+question used to keep the model busy for more than 10 minutes).
+
+When retrieval finds nothing (for example with `--k 0`), the model is not
+called at all: the answer says that no relevant source was found, instead of
+letting the model make one up from its own knowledge.
+
 The answer is printed, saved as a `StudentSearchResultsAndAnswer` JSON file, and
-returned as a `MinimalAnswer` JSON string for the HTTP API.
+returned as a `MinimalAnswer` dictionary for the HTTP API.
 `answer_dataset()` does the same for every question of a `search_dataset()`
-output, reusing the sources that were already retrieved.
+output, reusing the sources that were already retrieved. The model is loaded
+once per process, so a running HTTP server answers successive questions
+without reloading it.
 
 ## Chunking Strategy
 
@@ -447,6 +494,25 @@ Code repeats the same identifiers constantly (`self`, `torch`, `hidden_states`..
 so the result of splitting each identifier is cached: the corpus has ~55 000
 distinct terms for millions of occurrences, and each one is only split once.
 
+##### Step 1b: the file path is indexed too
+
+The text that gets tokenized is not only the chunk's content: it is the file
+path followed by the content. `docs/cli/bench/throughput.md` adds the words
+`docs`, `cli`, `bench`, `throughput` and `md` to every chunk of that file.
+
+This matters because a path often says what a file is about better than its
+text does. Some documentation pages hold almost nothing: `docs/cli/serve.md` is
+116 characters long (a title and an include directive that the documentation
+website expands later), so a question like "What is the CLI command to start
+vLLM serve?" had nothing to match except the path. And code questions often
+name the module they are about ("the fused MoE layer", "the metrics reader").
+
+Only the searched text changes: the chunk itself, its character range and its
+`content` field stay exactly the same, so the 2000-character limit and the
+reported offsets are unaffected. Measured on the public datasets, this took
+recall@5 from 0.860 to 0.900 on docs and from 0.707 to 0.818 on code. The path
+is also prepended to the text given to the embedding model (see below).
+
 ##### Step 2: the BM25 score
 
 For a question Q and a chunk D, the score is a sum over every word t of the
@@ -585,23 +651,25 @@ carries the chunk's ID and can be removed when its file changes.
 ##### Only the documentation is embedded
 
 Embedding is by far the most expensive operation of the whole pipeline. Running
-the model on all ~16 500 chunks took more than 6 minutes on a 4-core machine,
-over the 5-minute indexing limit. So I measured what each part actually brings,
-replaying the public questions with the semantic index restricted to different
-subsets of the chunks:
+the model on all ~16 600 chunks takes almost 7 minutes on a 4-core machine,
+over the 5-minute indexing limit on its own. So I measured what each part
+actually brings, replaying the public questions with the semantic index
+restricted to different subsets of the chunks (current code, file path
+indexed):
 
-| Semantic index contains | Chunks embedded | recall@5 docs | recall@5 code |
-|---|---|---|---|
-| nothing (BM25 only) | 0 | 0.780 | 0.727 |
-| every chunk | 16 493 | 0.810 | 0.737 |
-| Markdown chunks only | 847 | **0.830** | 0.707 |
+| Semantic index contains | Chunks embedded | Embedding time | recall@5 docs | recall@5 code |
+|---|---|---|---|---|
+| nothing (BM25 only) | 0 | 0 s | 0.830 | 0.828 |
+| every chunk | 16 592 | 407 s | 0.880 | 0.828 |
+| Markdown chunks only | 847 | 18 s | **0.900** | 0.818 |
 
 Code questions mostly quote identifiers, which BM25 already matches exactly:
-embedding 15 600 code chunks bought about 1 point of recall for ~95% of the
-indexing time. Documentation questions, on the other hand, are paraphrases, and
-without semantic search docs recall falls below the 80% requirement. So only the
-Markdown chunks get a vector, and BM25 keeps covering everything. Indexing went
-from ~7 minutes to ~35 seconds.
+embedding the 15 700 code chunks brings nothing on code and costs 22 times
+more time. Documentation questions, on the other hand, are paraphrases, and
+semantic search adds 7 points of docs recall@5 on top of BM25 (before the file
+path was indexed, BM25 alone even fell below the 80% requirement, at 0.780).
+So only the Markdown chunks get a vector, and BM25 keeps covering everything.
+Indexing went from ~7 minutes to well under a minute.
 
 The model reads at most 256 tokens of each chunk (`MAX_SEQ_LENGTH`), which is
 the length it was trained on. I tried 512: same recall, twice the time.
@@ -668,7 +736,10 @@ Finally, an empty or blank question returns no sources at all: any vector is
 
 All figures below were measured on a cloud container with 4 cores of an Intel
 Xeon @ 2.80 GHz and 15 GB of RAM, on the public datasets (100 docs questions,
-99 code questions), with the default `--max_chunk_size 2000`.
+99 code questions), with the default `--max_chunk_size 2000`, by running the
+same commands and scripts as the correction (the moulinette for recall). Times
+include starting Python and loading the models, as a user would experience
+them.
 
 #### Recall@k
 
@@ -679,22 +750,26 @@ character ranges) of at least 0.05.
 
 | Dataset | recall@1 | recall@3 | recall@5 | recall@10 | Required recall@5 |
 |---|---|---|---|---|---|
-| docs | 0.610 | 0.760 | **0.830** | 0.870 | 0.80 |
-| code | 0.374 | 0.616 | **0.707** | 0.818 | 0.50 |
+| docs | 0.660 | 0.830 | **0.900** | 0.920 | 0.80 |
+| code | 0.465 | 0.758 | **0.818** | 0.869 | 0.50 |
 
-Both requirements are met. Code has the most comfortable margin. Docs is closer
-to its threshold: 3 of the 100 docs reference sources live in `.txt` files.
+Both requirements are met with a margin: 10 points on docs, 32 points on code.
+How each part of the retriever contributes is measured in
+[Retrieval Method](#retrieval-method): indexing the file path (+4 points docs,
++11 points code) and semantic search on the documentation (+7 points docs over
+BM25 alone).
 
 #### Effect of the chunk size
 
 The subject asks to report the effect of smaller chunks. Same pipeline, only
-`--max_chunk_size` changes:
+`--max_chunk_size` changes (indexing time is a full rebuild with the embedding
+model already on disk):
 
-| max_chunk_size | Chunks | recall@5 docs | recall@5 code | recall@10 docs | recall@10 code |
-|---|---|---|---|---|---|
-| 2000 | 16 493 | **0.830** | **0.707** | **0.870** | **0.818** |
-| 1000 | 34 819 | 0.800 | 0.687 | 0.840 | 0.758 |
-| 500 | 75 579 | 0.780 | 0.606 | 0.820 | 0.687 |
+| max_chunk_size | Chunks | Indexing | recall@5 docs | recall@5 code | recall@10 docs | recall@10 code |
+|---|---|---|---|---|---|---|
+| 2000 | 16 592 | 36 s | **0.900** | **0.818** | **0.920** | **0.869** |
+| 1000 | 35 008 | 53 s | 0.850 | 0.768 | 0.890 | 0.859 |
+| 500 | 75 996 | 84 s | 0.830 | 0.707 | 0.860 | 0.788 |
 
 Bigger chunks win on every metric. Two reasons:
 
@@ -705,35 +780,59 @@ Bigger chunks win on every metric. Two reasons:
   This is also why nested code chunks repeat their enclosing class and function
   signature (see [Chunking Strategy](#chunking-strategy)).
 
-At 500 characters, docs recall@5 falls below the 80% requirement, so 2000 (the
-maximum allowed) stays the default.
+Smaller chunks also cost more: more chunks to embed and to score, so indexing
+takes longer. 2000 (the maximum allowed) stays the default.
 
 #### Indexing time (limit: 5 minutes)
 
 | Run | Time |
 |---|---|
-| First ever run (downloads and quantizes the embedding model) | 44 s |
-| Full rebuild, model already on disk | 21 to 36 s |
-| Same first run, restricted to a single CPU core | 1 min 13 s |
-| Incremental, one `.md` and one `.py` file changed | 13 s |
+| First ever run: no index, embedding model downloaded and quantized | 44 s |
+| Full rebuild, embedding model already on disk | 36 s |
+| Nothing changed since the last run | 12.5 s (2 s of actual indexing) |
+| One file changed | 13.4 s (1 file re-indexed) |
+| First ever run, restricted to a **single CPU core** | 81 s |
 
-Chunking the whole corpus takes 5 to 10 seconds; the rest is embedding the
-Markdown chunks. The single-core run is my stand-in for weak hardware: it still
-leaves about 4× of margin under the limit.
+Chunking the whole corpus takes 6 to 8 seconds and embedding the 847 Markdown
+chunks about 18 seconds; the rest is starting Python and loading the libraries.
+The single-core run is my stand-in for weak hardware: it still leaves more than
+3 times the margin under the limit.
 
 #### Retrieval throughput (limit: 90 s for 200 questions)
 
-Running `search_dataset` on both public datasets (199 questions) takes 24 s in
-total, including loading the models and the index twice (once per command,
-~6 s each). The search itself costs ~2.5 ms per question for BM25 plus one
-batched embedding pass for all the questions.
+Running `search_dataset` on two 100-question datasets, exactly like the
+correction script, takes 32 s in total (33 s on a single core), so about 16 s
+per dataset, of which ~6 s is loading the index and the embedding model. A
+single `search` command takes 15 s, for the same reason.
 
-The BM25 optimisation described in
+The search itself is fast: BM25 scores a question in 2.2 ms (16 592 chunks;
+fitting the index at load time takes ~3.5 s), and the semantic side embeds a
+whole batch of questions at once. The BM25 optimisation described in
 [Lexical retrieval: BM25](#lexical-retrieval-bm25) is what made this possible:
-with the original version, BM25 alone took ~150 ms per question, so ~30 s of the
-budget for 200 questions before even embedding anything.
+the textbook version took ~150 ms per question, ~30 s of the budget for 200
+questions before even embedding anything.
 
 #### Answer generation
+
+| Run | Time |
+|---|---|
+| First `answer` ever: Qwen3-0.6B downloaded and exported to OpenVINO int8 | 122 s |
+| `answer` from the command line, model on disk | 25 to 28 s |
+| `/answer` through the HTTP API, first request (models loaded) | 14 s |
+| `/answer` through the HTTP API, next requests (models in memory) | 7 s |
+| `answer_dataset` on the 100 public docs questions | 760 s (7.6 s per question) |
+
+Most of a command-line `answer` is loading the models; the generation itself
+takes a few seconds, which is what the HTTP API shows once they stay in memory.
+
+On the 100 public docs questions, I judged about 85 answers satisfactory:
+coherent, grounded in the retrieved sources and answering the question (for
+example, the exact endpoint `/v1/load_lora_adapter`, the environment variable
+`VLLM_ATTENTION_BACKEND` with its possible values, or the `--runner pooling`
+flag). The failures are mostly reasoning limits of a 0.6B model rather than
+retrieval failures: inverted yes/no answers ("Can vLLM serve multiple models on
+a single port?" answered "Yes" although the context says no), lists cut short,
+answers that restate the question, and occasionally an invented link.
 
 ## Design Decisions
 
@@ -760,8 +859,19 @@ are always comparable.
 This is the decision that made the 5-minute indexing limit reachable, and it
 was taken from measurements rather than intuition (see
 [Only the documentation is embedded](#only-the-documentation-is-embedded)).
-It costs 3 points of code recall@5 (0.737 → 0.707, still far above 0.50), and
-it gained 2 points of docs recall@5, the dataset closest to its threshold.
+Compared with embedding every chunk, it costs 1 point of code recall@5
+(0.828 → 0.818, far above the 0.50 requirement), gains 2 points of docs
+recall@5 (0.880 → 0.900), and divides the embedding time by 22.
+
+#### Indexing the file path
+
+The path of a file is searched together with its content (see
+[Step 1b](#step-1b-the-file-path-is-indexed-too)), because it carries meaning
+the text sometimes lacks: some documentation pages are little more than a
+title, and code questions often name their module. It was the single most
+effective change of the project (+4 points of docs recall@5, +11 points of code
+recall@5) and costs nothing: only the searched text changes, never the chunk's
+character range or its `content`.
 
 #### Structure-aware chunking
 
@@ -805,6 +915,22 @@ model has to read, the more likely it is to drift away from the question, and
 the slower it answers. Its "thinking" mode is disabled, and the system prompt
 tells it to answer in 2-3 sentences and to say so when the context doesn't
 contain the answer, instead of making something up.
+
+The prompt also has a hard token budget (3072 tokens of context, 256 of
+question), so no input can make generation run away, and a question for which
+nothing was retrieved gets a fixed "no relevant sources" answer without calling
+the model at all: with no context, anything it said would come from its own,
+outdated knowledge rather than from the codebase.
+
+#### Models kept in memory, rebuilt when the index changes
+
+A CLI command runs once and exits, but the HTTP server lives on. Within one
+process, the retriever (the BM25 index and the embedding model) and Qwen3-0.6B
+are loaded once and reused. The retriever remembers the modification times of
+the index files it was built from and is rebuilt automatically when they
+change, so an `/index` request is picked up by the next `/search` without
+restarting the server. Requests are served one at a time, since they share
+these models and `/index` rewrites the files they read.
 
 #### A CLI that never crashes
 
@@ -851,7 +977,12 @@ slices as a last resort.
 Docs recall@5 sat right at 0.80 for a long time, where any small change could
 make it fail. The fusion constants (weights and RRF constant) and the choice of
 what to embed were all decided by replaying the public questions and comparing
-recall, which brought it to 0.83.
+recall, which brought it to 0.83. Indexing `.txt` files (some reference sources
+are text files) brought it to 0.86. The real fix came from looking at the
+questions that still failed: several asked for a CLI command whose
+documentation page is almost empty, and only its path said what it was about.
+Indexing the file path brought docs recall@5 to 0.90 and code recall@5 from
+0.707 to 0.818.
 
 #### Degenerate inputs
 
@@ -879,33 +1010,42 @@ Build the index:
 $ uv run python3 -m src index
 Loading cache...
 Looking up files that need indexing...
-Indexing 1941 files...
-Indexed as 16493 chunks in 5.018s.
+Indexing 1969 files...
+Indexed as 16592 chunks in 7.379s.
 Building vector index from the Markdown chunks...
 Saving results...
-Built lexical + semantic index in 21.090s.
+Built lexical + semantic index in 26.346s.
 Ingestion complete! Indices saved under data/processed/
 ```
 
 Search for a single question:
 ```bash
-$ uv run python3 -m src search "How do I enable LoRA?" --k 3
-Processing query: How do I enable LoRA?
-1. data/raw/vllm-0.10.1/docs/features/lora.md [2071:3833]
-2. data/raw/vllm-0.10.1/tests/lora/test_transformers_model.py [1515:3341]
-3. data/raw/vllm-0.10.1/docs/features/lora.md [0:1882]
+$ uv run python3 -m src search "How to configure OpenAI server?" --k 3
+Processing query: How to configure OpenAI server?
+1. data/raw/vllm-0.10.1/docs/deployment/frameworks/dstack.md [1788:3170]
+2. data/raw/vllm-0.10.1/docs/serving/openai_compatible_server.md [0:1952]
+3. data/raw/vllm-0.10.1/examples/online_serving/openai_transcription_client.py [0:1350]
 ```
 
 Search a whole dataset, then evaluate it:
 ```bash
 $ make search_docs
 Treating 100 questions
+Searching: 100%|██████████| 100/100
 Saved student_search_results to data/output/search_results/UnansweredQuestions/dataset_docs_public.json
 
 $ make eval_docs
 Evaluation Results
 ========================================
-recall@10: 0.870  recall@8: 0.860  recall@5: 0.830  recall@3: 0.760  recall@1: 0.610
+recall@10: 0.920  recall@8: 0.910  recall@5: 0.900  recall@3: 0.830  recall@1: 0.660
+```
+
+Answer a single question:
+```bash
+$ uv run python3 -m src answer "How do you specify LoRA modules when starting a vLLM server?" --k 10
+Processing query: How do you specify LoRA modules when starting a vLLM server?
+To specify LoRA modules when starting a vLLM server, use the `--lora-modules` command line argument with the `name` and `path` of each LoRA module.
+Saved answer to data/output/search_results_and_answer/single_query/single_query.json
 ```
 
 Answer a whole dataset from its search results:
@@ -924,25 +1064,120 @@ Degenerate inputs end with a clear message instead of a traceback:
 $ uv run python3 -m src search "LoRA" --k abc
 Error: --k must be a non-negative integer, got 'abc'.
 
-$ uv run python3 -m src search_dataset --dataset_path nope.json --save_directory out
-Error: [Errno 2] No such file or directory: 'nope.json'
+$ uv run python3 -m src search_dataset --dataset_path /nonexistent/dataset.json
+Error: [Errno 2] No such file or directory: '/nonexistent/dataset.json'
+
+$ uv run python3 -m src answer "What is vLLM?" --k 0
+Processing query: What is vLLM?
+No relevant sources were found in the indexed codebase for this question, so it cannot be answered from it.
+Saved answer to data/output/search_results_and_answer/single_query/single_query.json
 ```
 
 #### HTTP API
 
-Start the server (it listens on `http://127.0.0.1:5000` by default):
+Start the server (it listens on `http://127.0.0.1:5000`):
 ```bash
 make server
 ```
 
-Build the index:
+Update the index (here nothing changed since the last run):
 ```bash
 $ curl -X POST -d "max_chunk_size=2000" http://127.0.0.1:5000/index
-{"chunks":16493,"files_indexed":1941,"status":"done","time_elapsed":21.09}
+{"chunks":0,"files_indexed":0,"status":"done","time_elapsed":1.52}
 ```
 
-Answer a question from the top 5 retrieved chunks:
+Search (sources shortened here):
 ```bash
-$ curl -X POST -d "query=How do I enable LoRA?" -d "k=5" http://127.0.0.1:5000/answer
-{"question_id":"...","question":"How do I enable LoRA?","retrieved_sources":[{"file_path":"data/raw/vllm-0.10.1/docs/features/lora.md","first_character_index":2071,"last_character_index":3833,...}, ...],"answer":"..."}
+$ curl -X POST -d "query=How do I enable LoRA?" -d "k=3" http://127.0.0.1:5000/search
+{"question":"How do I enable LoRA?","question_id":"e9c0fb6c-...","retrieved_sources":[{"content":"\n## Serving LoRA Adapters\n\nLoRA adapters can be used ...","file_path":"data/raw/vllm-0.10.1/docs/features/lora.md", ...}, ...]}
+```
+
+Answer from the top 5 retrieved chunks:
+```bash
+$ curl -X POST -d "query=What is PagedAttention?" -d "k=5" http://127.0.0.1:5000/answer
+{"answer":"PagedAttention is a type of attention mechanism used in the vLLM library ...","question":"What is PagedAttention?","question_id":"...","retrieved_sources":[...]}
+```
+
+Invalid requests get a JSON error with status 400:
+```bash
+$ curl -X POST -d "query=What is vLLM?" -d "k=abc" http://127.0.0.1:5000/answer
+{"error":"'k' must be an integer, got 'abc'"}
+```
+
+## Bonus Part
+
+All five bonuses are implemented. Each one can be demonstrated with the
+commands below (figures measured on the same machine as the
+[Performance Analysis](#performance-analysis)).
+
+#### 1. Semantic embeddings
+
+The Markdown chunks are embedded with `all-MiniLM-L6-v2`, a 22-million
+parameter CPU model run by OpenVINO with int8 weights, and searched with a
+FAISS inner-product index (see
+[Semantic retrieval](#semantic-retrieval-embeddings-and-faiss)). Embedding the
+847 chunks takes about 18 seconds.
+
+Demo: a question that shares no useful keyword with its answer.
+```bash
+uv run python3 -m src search "How do I serve a model to many users over the network?" --k 5
+```
+BM25 alone finds nothing relevant in its top 5; with semantic search,
+`docs/serving/openai_compatible_server.md` comes second. Over the docs dataset,
+semantic search adds 7 points of recall@5 (0.830 → 0.900).
+
+#### 2. Hybrid retrieval
+
+The BM25 and FAISS rankings are fused with weighted Reciprocal Rank Fusion (see
+[Fusion](#fusion-weighted-reciprocal-rank-fusion)); every `search`,
+`search_dataset` and `answer` uses it.
+
+| Retrieval | recall@5 docs | recall@5 code |
+|---|---|---|
+| BM25 only | 0.830 | 0.828 |
+| Hybrid (BM25 + semantic) | **0.900** | 0.818 |
+
+#### 3. Incremental indexing
+
+Each indexed file's SHA-256 fingerprint is cached; `index` only re-chunks and
+re-embeds the files whose fingerprint changed, and drops the chunks of deleted
+files.
+
+```bash
+uv run python3 -m src index      # nothing changed: "Indexing 0 files..."
+echo "a new line" >> data/raw/vllm-0.10.1/docs/features/lora.md
+uv run python3 -m src index      # "Indexing 1 files..."
+```
+
+| Run | Work done | Time |
+|---|---|---|
+| Full rebuild | 1969 files, 16 592 chunks | 36 s |
+| Nothing changed | 0 files | 12.5 s (2 s of indexing, the rest is start-up) |
+| One file changed | 1 file | 13.4 s (2.4 s of indexing) |
+
+#### 4. Caching
+
+Three levels of caching remove repeated work:
+
+- **The index is cached on disk** (`data/processed/`): a cold start loads it
+  instead of rebuilding it, and incremental indexing (bonus 3) builds on it.
+- **Both models are exported once** to `data/models/`: the quantized embedder
+  (about 10 s the first time) and Qwen3-0.6B (122 s the first time, download
+  included). Every later run loads them from disk, without any network access.
+- **Inside a running process**, the retriever and Qwen3-0.6B stay in memory, and
+  the retriever is rebuilt only when the index files change on disk. Through
+  the HTTP API, the first `/answer` takes 14 s (models loaded) and the next ones
+  7 s.
+
+#### 5. Local HTTP API
+
+`make server` starts a Flask server on `http://127.0.0.1:5000` with three
+`POST` endpoints: `/index`, `/search` and `/answer` (see
+[Instructions](#instructions) and the [HTTP API examples](#http-api)). Results
+are JSON documents following the project's pydantic models, and invalid
+requests get a JSON error with status 400 instead of a crash.
+
+```bash
+curl -X POST -d "query=How do I enable LoRA?" -d "k=3" http://127.0.0.1:5000/search
+curl -X POST -d "query=How do I enable LoRA?" -d "k=5" http://127.0.0.1:5000/answer
 ```
