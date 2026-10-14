@@ -6,7 +6,7 @@ readme = "README.md"
 authors = [
     { name = "cali-pso", email = "raphael.poggi@laposte.net" }
 ]
-requires-python = ">=3.13"
+requires-python = ">=3.10"
 dependencies = [
     "faiss-cpu>=1.15.0",
     "fire>=0.7.1",

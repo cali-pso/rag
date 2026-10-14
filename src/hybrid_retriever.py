@@ -1,7 +1,11 @@
-from typing import Dict, List
+from typing import TYPE_CHECKING, Dict, List
 from src.bm25retriever import BM25Retriever
-from src.vector_indexer import VectorIndexer
 from src.models import MinimalSource
+
+if TYPE_CHECKING:
+    # Type hints only: importing it for real would load torch and the
+    # embedding stack for commands that never search.
+    from src.vector_indexer import VectorIndexer
 
 # Reciprocal Rank Fusion constant. The usual ~60 default comes from
 # web-scale search literature; on a corpus this size it flattens rank
@@ -34,7 +38,7 @@ class HybridRetriever:
     def __init__(
         self,
         bm25: BM25Retriever,
-        vector_indexer: VectorIndexer,
+        vector_indexer: "VectorIndexer",
         rrf_constant: int = RRF_CONSTANT,
         lexical_weight: float = LEXICAL_WEIGHT,
         semantic_weight: float = SEMANTIC_WEIGHT,

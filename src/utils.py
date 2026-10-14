@@ -9,6 +9,12 @@ from src.models import (
 )
 
 CACHE_PATH = "data/processed/index_cache.json"
+# Answer given when retrieval found nothing: generating one anyway would
+# only let the model make it up from its own (outdated) knowledge.
+NO_SOURCES_ANSWER = (
+    "No relevant sources were found in the indexed codebase for this "
+    "question, so it cannot be answered from it."
+)
 
 ModelT = TypeVar("ModelT", bound=BaseModel)
 

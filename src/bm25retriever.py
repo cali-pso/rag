@@ -55,9 +55,9 @@ class BM25Retriever:
         self.sources: List[MinimalSource] = []
         self.avgdl = 0.0
         self.vocabulary: Dict[str, int] = {}
-        self.offsets = np.zeros(1, dtype=np.int64)
-        self.doc_ids = np.zeros(0, dtype=np.int64)
-        self.impacts = np.zeros(0, dtype=np.float64)
+        self.offsets: np.ndarray = np.zeros(1, dtype=np.int64)
+        self.doc_ids: np.ndarray = np.zeros(0, dtype=np.int64)
+        self.impacts: np.ndarray = np.zeros(0, dtype=np.float64)
 
     def tokenize(self, text: str) -> List[str]:
         """Extracts identifier-like tokens, keeping digits and
