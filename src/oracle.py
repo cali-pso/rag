@@ -1,11 +1,9 @@
 from pathlib import Path
 from typing import Dict, List
-from transformers import AutoTokenizer
-from optimum.intel import OVModelForCausalLM, OVWeightQuantizationConfig
-import openvino as ov
+
 import openvino_genai as og
-from openvino_tokenizers import convert_tokenizer
 from src.models import MinimalSearchResults
+from src.vector_indexer import OV_CACHE_DIR
 
 
 MODEL_NAME = "Qwen/Qwen3-0.6B"
@@ -16,11 +14,18 @@ SYSTEM_PROMPT = (
     "context does not relate to the answer, say so explicitly. Be "
     "concise and factual, answer in 2-3 phrases."
 )
+SOURCES_INCLUDED = 3
 
 
 def load_qwen() -> og.LLMPipeline:
     """Exports Qwen3-0.6B to OpenVINO with int8 weights on first use, then
     loads it as an OpenVINO GenAI pipeline."""
+    from optimum.intel import OVModelForCausalLM, OVWeightQuantizationConfig
+    from transformers import AutoTokenizer
+    import openvino as ov
+    from openvino_tokenizers import convert_tokenizer
+
+
     if not (QWEN_OV_DIR / "openvino_model.xml").exists():
         model = OVModelForCausalLM.from_pretrained(
             MODEL_NAME,
@@ -50,7 +55,7 @@ class Oracle:
         max_new_tokens: int = MAX_NEW_TOKENS,
     ) -> None:
 
-        self.tokenizer = AutoTokenizer.from_pretrained(model_name)
+
         self.pipe = load_qwen()
         self.generation_config = og.GenerationConfig()
         self.generation_config.max_new_tokens = max_new_tokens
@@ -62,7 +67,7 @@ class Oracle:
     ) -> List[Dict[str, str]]:
         context = "\n\n".join(
             f"[{source.file_path}]\n{source.content}"
-            for source in result.retrieved_sources[:5]
+            for source in result.retrieved_sources[:SOURCES_INCLUDED]
         )
         return [
             {"role": "system", "content": SYSTEM_PROMPT},
@@ -91,12 +96,21 @@ class Oracle:
         if not results:
             return []
 
+        self.tokenizer = self.pipe.get_tokenizer()
+
+        def _count(self, text: str) -> int:
+            return int(self.tokenizer.encode(text).input_ids.shape[1])
+
+        def _truncate(self, text: str, max_tokens: int) -> str:
+            ids = self.tokenizer.encode(text).input_ids.data[0]
+            if len(ids) <= max_tokens:
+                return text
+            return str(self.tokenizer.decode(ids[:max_tokens].tolist()))
+
         prompts: List[str] = [
             self.tokenizer.apply_chat_template(
-                self._build_conversation(result),
-                tokenize=False,
+                history=self._build_conversation(result),
                 add_generation_prompt=True,
-                enable_thinking=False,
             )
             for result in results
         ]

@@ -3,9 +3,7 @@ import time
 from typing import Any, Dict
 from tqdm import tqdm
 from src.lexical_indexer import load_index, LEXICAL_INDEX_PATH
-from src.bm25retriever import BM25Retriever
-from src.vector_indexer import VectorIndexer, FAISS_INDEX, FAISS_SOURCES
-from src.hybrid_retriever import HybridRetriever
+from src.vector_indexer import FAISS_INDEX, FAISS_SOURCES
 from src.evaluator import Evaluator
 from src.errors import IndexNotFound, InvalidArgument
 from src.utils import (
@@ -25,10 +23,6 @@ from src.models import (
     MinimalAnswer,
     StudentSearchResultsAndAnswer,
 )
-
-os.environ["OMP_NUM_THREADS"] = "1"
-os.environ["MKL_NUM_THREADS"] = "1"
-os.environ["OPENBLAS_NUM_THREADS"] = "1"
 
 RAW_DATA_PATH = "data/raw"
 SINGLE_QUERY_SEARCH_DIR = "data/output/search_results/single_query"
@@ -64,6 +58,12 @@ def _build_retriever() -> HybridRetriever:
     Raises:
         IndexNotFound: If `index` has not been run yet.
     """
+    from src.vector_indexer import FAISS_INDEX, FAISS_SOURCES
+    from src.bm25retriever import BM25Retriever
+    from src.vector_indexer import VectorIndexer
+    from src.hybrid_retriever import HybridRetriever
+    
+
     if not all(
         os.path.isfile(path)
         for path in (LEXICAL_INDEX_PATH, FAISS_INDEX, FAISS_SOURCES)
@@ -75,8 +75,12 @@ def _build_retriever() -> HybridRetriever:
     # deleted since then are dropped by re-running `index`, not here.
     sources_dict = load_index(set())
     sources = [s for file in sources_dict for s in sources_dict[file]]
-    bm25 = BM25Retriever()
-    bm25.fit(sources)
+    try:
+        bm25 = BM25Retriever.load(sources)
+    except FileNotFoundError:
+        bm25 = BM25Retriever()
+        bm25.fit(sources)
+        
     return HybridRetriever(bm25=bm25, vector_indexer=VectorIndexer())
 
 
@@ -95,7 +99,8 @@ def index(max_chunk_size: int = MAX_CHUNK_SIZE_LIMIT) -> Dict[str, str | int]:
     Args:
         max_chunk_size: Maximum width, in characters, of a chunk's span.
     """
-    from src.lexical_indexer import LexicalIndexer
+    
+
 
     if (
         isinstance(max_chunk_size, bool)
@@ -138,6 +143,8 @@ def index(max_chunk_size: int = MAX_CHUNK_SIZE_LIMIT) -> Dict[str, str | int]:
     paths, deleted_paths = sort_files(RAW_DATA_PATH, cache)
     all_paths = paths["md_paths"] + paths["py_paths"]
 
+    from src.lexical_indexer import LexicalIndexer
+
     print(f"Indexing {len(all_paths)} files...")
     lexical_indexer = LexicalIndexer()
     lexical_indexer.create_index(paths, deleted_paths, max_chunk_size)
@@ -152,10 +159,21 @@ def index(max_chunk_size: int = MAX_CHUNK_SIZE_LIMIT) -> Dict[str, str | int]:
         f"in {(time.time() - start):.3f}s.",
     )
     print("Building vector index from the Markdown chunks...")
+
+    from src.vector_indexer import VectorIndexer
+
     vector_indexer = VectorIndexer()
     vector_indexer.create_index(sources, deleted_paths)
     vector_indexer.save()
+
+
+    print("Fitting BM25 retriever...")
+    from src.bm25retriever import BM25Retriever
+
+    bm25 = BM25Retriever()
+    bm25.fit(sources)
     print("Saving results...")
+    bm25.save()
     save_cache(cache)
     print(f"Built lexical + semantic index in {(time.time() - start):.3f}s.")
     print("Ingestion complete! Indices saved under data/processed/")
@@ -165,9 +183,10 @@ def index(max_chunk_size: int = MAX_CHUNK_SIZE_LIMIT) -> Dict[str, str | int]:
         "files_indexed": len(all_paths),
         "chunks": len(sources),
     }
+    
 
 
-def search(query: Any, k: Any = 10) -> None:
+def search(query: Any, k: Any = 10, silent: bool = False) -> None:
     """Retrieves the top-k sources for a single query and prints them.
 
     Args:
@@ -176,27 +195,22 @@ def search(query: Any, k: Any = 10) -> None:
     """
     query = as_query(query)
     k = check_k(k)
-    if not query.strip():
-        print("Warning: empty query, nothing to search for.")
-    print(f"Processing query: {query}")
-    bar = tqdm(range(3))
+    if not silent:
+        if not query.strip():
+            print("Warning: empty query, nothing to search for.")
+        print(f"Processing query: {query}")
     question = UnansweredQuestion(question=query)
     start = time.time()
-    bar.update(1)
-    bar.refresh()
     retriever = _build_retriever()
-    bar.update(1)
-    bar.refresh()
     sources = retriever.search(question.question, k)
-    bar.update(1)
-    bar.refresh()
-    print(f"Retrieved {len(sources)} sources in {(time.time() - start):.3f}s")
-    for rank, source in enumerate(sources, start=1):
-        print(
-            f"{rank}. {source.file_path} "
-            f"[{source.first_character_index}:"
-            f"{source.last_character_index}]"
-        )
+    if not silent:
+        print(f"Retrieved {len(sources)} sources in {(time.time() - start):.3f}s")
+        for rank, source in enumerate(sources, start=1):
+            print(
+                f"{rank}. {source.file_path} "
+                f"[{source.first_character_index}:"
+                f"{source.last_character_index}]"
+            )
     return MinimalSearchResults(
         question_id=question.question_id,
         question=question.question,

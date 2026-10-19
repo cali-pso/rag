@@ -1,7 +1,14 @@
-from src.commands import index, answer, search
+from src.commands import index, answer, search, _build_retriever
+import threading
 from flask import Flask, request
 
 app = Flask("rag_http_api")
+
+try:
+    _build_retriever()
+except Exception:
+    pass  # no index yet: the first request will report it
+
 
 
 @app.route("/index", methods=["POST"])
@@ -20,7 +27,7 @@ def http_api_search():
         k = int(request.form["k"])
     except Exception as e:
         return f"Error parsing argument: {e}"
-    return search(query=query, k=k)
+    return search(query=query, k=k, silent=True)
 
 
 @app.route("/answer", methods=["POST"])

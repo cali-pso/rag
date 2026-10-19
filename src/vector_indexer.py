@@ -6,14 +6,17 @@ from typing import Dict, List, Set
 import numpy as np
 import openvino as ov
 import faiss
-from optimum.intel import OVWeightQuantizationConfig
-from sentence_transformers import SentenceTransformer
 from pydantic import ValidationError
+from tokenizers import Tokenizer
+from tqdm import tqdm
 from src.errors import CorruptedIndex
 from src.models import MinimalSource
 
 EMBED_MODEL_NAME = "sentence-transformers/all-MiniLM-L6-v2"
 EMBED_OV_DIR = Path("data/models/all-minilm-l6-v2-ov-int8")
+# Compiled models are cached here by OpenVINO, so later runs skip the
+# compilation step (it invalidates the cache itself when needed).
+OV_CACHE_DIR = Path("data/models/ov_cache")
 BATCH_SIZE = 16
 # Only these chunks get a vector; BM25 still indexes everything. On the
 # public questions, semantic search on code chunks bought ~1 point of
@@ -42,6 +45,11 @@ def export_embedder() -> None:
     """
     if (EMBED_OV_DIR / "modules.json").exists():
         return
+    # Heavy imports (torch, transformers, optimum) only on this one-time
+    # path: every later run embeds with OpenVINO directly (see Embedder).
+    from optimum.intel import OVWeightQuantizationConfig
+    from sentence_transformers import SentenceTransformer
+
     print("Exporting the embedding model (first run only)...")
     tmp_dir = EMBED_OV_DIR.with_name(EMBED_OV_DIR.name + ".tmp")
     shutil.rmtree(tmp_dir, ignore_errors=True)
@@ -59,40 +67,81 @@ def export_embedder() -> None:
     os.replace(tmp_dir, EMBED_OV_DIR)
 
 
+class Embedder:
+    """Runs the exported all-MiniLM-L6-v2 straight through OpenVINO.
+
+    Does what sentence-transformers does with this model (tokenize,
+    run the transformer, mean-pool the token vectors over the real
+    tokens, L2-normalize) without importing torch or transformers, which
+    take ~5 s to import on every run.
+    """
+
+    def __init__(self, model_dir: Path = EMBED_OV_DIR) -> None:
+        """
+        Parameters:
+            model_dir (Path): Directory written by export_embedder().
+        """
+        self.tokenizer = Tokenizer.from_file(str(model_dir / "tokenizer.json"))
+        self.tokenizer.enable_truncation(MAX_SEQ_LENGTH)
+        self.tokenizer.enable_padding(pad_id=0, pad_token="[PAD]")
+        OV_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        self.model = ov.Core().compile_model(
+            model_dir / "openvino" / "openvino_model.xml",
+            "CPU",
+            {"CACHE_DIR": str(OV_CACHE_DIR)},
+        )
+        # Output shape is [batch, tokens, hidden]: pooling keeps the last
+        # dimension, which is therefore the embedding size (384).
+        self.dimension: int = (
+            self.model.output(0).get_partial_shape()[-1].get_length()
+        )
+
+    def encode(
+        self,
+        texts: List[str],
+        batch_size: int = BATCH_SIZE,
+        show_progress: bool = False,
+    ) -> np.ndarray:
+        """Embeds texts into L2-normalized float32 vectors.
+
+        Parameters:
+            texts (List[str]): The texts to embed.
+            batch_size (int): Texts run through the model at once.
+            show_progress (bool): Whether to display a progress bar.
+
+        Returns:
+            An array of shape (len(texts), dimension).
+        """
+        if not texts:
+            return np.zeros((0, self.dimension), dtype=np.float32)
+        vectors: List[np.ndarray] = []
+        steps = range(0, len(texts), batch_size)
+        for i in tqdm(steps, desc="Embedding", disable=not show_progress):
+            end = i + batch_size
+            encoded = self.tokenizer.encode_batch(texts[i:end])
+            ids = np.array([e.ids for e in encoded], dtype=np.int64)
+            mask = np.array([e.attention_mask for e in encoded], dtype=np.int64)
+            hidden = self.model({
+                "input_ids": ids,
+                "attention_mask": mask,
+                "token_type_ids": np.zeros_like(ids),
+            })[0]
+            # Mean over real tokens only: padding must not count.
+            weights = mask[..., None].astype(np.float32)
+            pooled = (hidden * weights).sum(axis=1) / np.clip(
+                weights.sum(axis=1), 1e-9, None
+            )
+            norms = np.linalg.norm(pooled, axis=1, keepdims=True)
+            vectors.append(pooled / np.clip(norms, 1e-12, None))
+        return np.vstack(vectors).astype(np.float32)
+
+
 class VectorIndexer:
     def __init__(self) -> None:
         """Loads the quantized embedding model (exporting it on first use)
         and the saved FAISS index, or starts an empty one."""
         export_embedder()
-        self.model = SentenceTransformer(
-            str(EMBED_OV_DIR),
-            backend="openvino",
-            model_kwargs={
-                "device": "CPU",
-                "ov_config": {
-                    "INFERENCE_NUM_THREADS": str(os.cpu_count())
-                    if os.cpu_count() is not None
-                    else "4",
-                    "NUM_STREAMS": "1",
-                    "PERFORMANCE_HINT": "THROUGHPUT",
-                    "ENABLE_CPU_PINNING": "YES",
-                },
-            },
-        )
-        self.model.max_seq_length = MAX_SEQ_LENGTH
-        # Fix the batch dimension (sentence-transformers pads a short final
-        # batch to match) but leave the sequence dimension bounded-dynamic:
-        # a batch of short chunks is tokenized and run at its own actual
-        # length instead of always paying for MAX_SEQ_LENGTH, while a batch
-        # containing full-size chunks can still use up to the full ceiling.
-        ov_model = self.model[0].auto_model.model
-        seq_dim = ov.Dimension(1, MAX_SEQ_LENGTH)
-        ov_model.reshape({
-            "input_ids": ov.PartialShape([BATCH_SIZE, seq_dim]),
-            "attention_mask": ov.PartialShape([BATCH_SIZE, seq_dim]),
-            "token_type_ids": ov.PartialShape([BATCH_SIZE, seq_dim]),
-        })
-        self.model[0].auto_model.compile()
+        self.model = Embedder()
 
         self.sources: List[MinimalSource] = []
         self._sources_by_id: Dict[int, MinimalSource] = {}
@@ -102,8 +151,7 @@ class VectorIndexer:
         try:
             self.load()
         except FileNotFoundError:
-            dimension: int = self.model.get_embedding_dimension()
-            base_index = faiss.IndexFlatIP(dimension)
+            base_index = faiss.IndexFlatIP(self.model.dimension)
             self.index = faiss.IndexIDMap(base_index)
 
     def create_index(
@@ -152,15 +200,9 @@ class VectorIndexer:
             new_ids: np.ndarray = np.array(
                 [c.faiss_custom_id for c in chunks], dtype=np.int64
             )
-
-            embeddings: np.ndarray = self.model.encode(
-                texts,
-                batch_size=batch_size,
-                show_progress_bar=True,
-                convert_to_numpy=True,
-                normalize_embeddings=True,
-            ).astype(np.float32)
-
+            embeddings = self.model.encode(
+                texts, batch_size=batch_size, show_progress=True
+            )
             self.index.add_with_ids(embeddings, new_ids)
 
         self._reindex_sources()
@@ -199,14 +241,7 @@ class VectorIndexer:
         if not queries or k <= 0 or self.index.ntotal == 0:
             return [[] for _ in queries]
 
-        embeddings: np.ndarray = self.model.encode(
-            queries,
-            batch_size=BATCH_SIZE,
-            show_progress_bar=False,
-            convert_to_numpy=True,
-            normalize_embeddings=True,
-        ).astype(np.float32)
-
+        embeddings = self.model.encode(queries)
         top_k = min(k, self.index.ntotal)
         _, id_rows = self.index.search(embeddings, top_k)
 
@@ -222,6 +257,7 @@ class VectorIndexer:
     def save(
         self, index_path: str = FAISS_INDEX, sources_path: str = FAISS_SOURCES
     ) -> None:
+        """Writes the FAISS index and the source metadata to disk."""
         os.makedirs(os.path.dirname(index_path), exist_ok=True)
 
         faiss.write_index(self.index, index_path)

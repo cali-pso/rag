@@ -4,6 +4,7 @@ from collections import Counter
 from functools import lru_cache
 from typing import Dict, List, Tuple
 import numpy as np
+import pickle
 from src.models import MinimalSource
 
 # Matches on the ORIGINAL-case text, before lowering: case information
@@ -11,6 +12,8 @@ from src.models import MinimalSource
 # once everything is lowercased.
 _IDENTIFIER_RE = re.compile(r"[A-Za-z0-9_]+")
 _CAMEL_BOUNDARY_RE = re.compile(r"(?<=[a-z0-9])(?=[A-Z])")
+BM25_ARRAYS = "data/processed/bm25.npz"
+BM25_VOCAB = "data/processed/bm25_vocab.pkl"
 
 
 @lru_cache(maxsize=None)
@@ -58,6 +61,25 @@ class BM25Retriever:
         self.offsets = np.zeros(1, dtype=np.int64)
         self.doc_ids = np.zeros(0, dtype=np.int64)
         self.impacts = np.zeros(0, dtype=np.float64)
+
+    def save(self) -> None:
+        np.savez(BM25_ARRAYS, offsets=self.offsets, doc_ids=self.doc_ids, impacts=self.impacts, avgdl=np.array(self.avgdl))
+        with open(BM25_VOCAB, "wb") as f:
+            pickle.dump(self.vocabulary, f, protocol=pickle.HIGHEST_PROTOCOL)
+
+    @classmethod
+    def load(cls, sources: List[MinimalSource]) -> "BM25Retriever":
+        """Rebuilds a BM25Retriever from the saved arrays and vocabulary."""
+        bm25 = cls()
+        with np.load(BM25_ARRAYS) as data:
+            bm25.offsets = data["offsets"]
+            bm25.doc_ids = data["doc_ids"]
+            bm25.impacts = data["impacts"]
+            bm25.avgdl = float(data["avgdl"])
+        with open(BM25_VOCAB, "rb") as f:
+            bm25.vocabulary = pickle.load(f)
+        bm25.sources = list(sources)
+        return bm25
 
     def tokenize(self, text: str) -> List[str]:
         """Extracts identifier-like tokens, keeping digits and
