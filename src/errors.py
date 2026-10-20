@@ -1,3 +1,6 @@
+"""Errors raised on purpose, reported without a traceback."""
+
+
 class RagError(Exception):
     """Base class of every error this project raises on purpose.
 

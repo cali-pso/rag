@@ -175,7 +175,7 @@ produced. Here is each command, in that order:
 
 #### Index
 
-`def index(max_chunk_size: int = MAX_CHUNK_SIZE_LIMIT) -> Dict[str, str | int]:`
+`def index(max_chunk_size: int = MAX_CHUNK_SIZE_LIMIT) -> Dict[str, str | int | float]:`
 
 This function does a lot of the heavy lifting. To understand how it works, you
 first need to know what "the index" is. Here it means the actual data saved on
@@ -226,7 +226,11 @@ Here is how the function builds them:
    Markdown ones with its embedding model and stores the vectors in a FAISS
    index under each chunk's ID. That ID is what allows a file's vectors to be
    removed when the file changes or disappears.
-5. **Save.** On success, each indexer writes its index to `data/processed/` and
+5. **Fit BM25.** BM25's statistics (see
+   [Lexical retrieval: BM25](#lexical-retrieval-bm25)) are recomputed over
+   every chunk, changed or not, since one new file changes the weight of every
+   word, and saved as arrays so that searches only have to load them.
+6. **Save.** On success, each indexer writes its index to `data/processed/` and
    the cache is updated.
 
 The function returns a short statistics dictionary describing what just
@@ -238,7 +242,7 @@ happened. You only see it when the function is called through the HTTP API:
 
 #### Search
 
-`def search(query: Any, k: Any = 10) -> None:`
+`def search(query: Any, k: Any = 10, silent: bool = False) -> Dict[str, Any]:`
 
 This function uses BM25, FAISS similarity search, and a fusion step to get the
 top-k most relevant chunks for a question. `search()` itself only validates its
@@ -264,6 +268,11 @@ The final ranked list is printed with each chunk's location:
 (embedding all the questions in a single batch), and writes the results as a
 `StudentSearchResults` JSON file.
 
+Loading the indexes and the embedding model takes a few seconds, so a running
+process (the HTTP API) keeps the loaded `HybridRetriever` in memory and reuses
+it for every request, until the index files change on disk. Qwen3-0.6B is kept
+the same way once loaded.
+
 #### Evaluate
 
 `def evaluate(student_search_results_path: Any, dataset_path: Any) -> None:`
@@ -279,11 +288,11 @@ moulinette and is meant for my own testing. Recall@k is explained in
 ```python
 def answer(
     query: Any, k: Any = 10, save_directory: Any = SINGLE_QUERY_ANSWER_DIR
-) -> str:
+) -> Optional[Dict[str, Any]]:
 ```
 
 This function runs the same retrieval as `search()`, then builds a prompt from
-the 5 best retrieved chunks (the context) and the question, and sends it to
+the 3 best retrieved chunks (the context) and the question, and sends it to
 Qwen3-0.6B. This lets the model give an informed answer about a codebase it
 has never seen. The prompt looks like this:
 
@@ -298,8 +307,13 @@ has never seen. The prompt looks like this:
          Question: How do I enable LoRA?
 ```
 
+The question is capped to 256 tokens: the chunks are at most 2000 characters
+(~600 tokens) each, so the prompt always stays within the model's budget. When
+no chunk is retrieved (`--k 0`, or nothing matched), the model is not even
+loaded: it could only make an answer up, so a fixed message is returned instead.
+
 The answer is printed, saved as a `StudentSearchResultsAndAnswer` JSON file, and
-returned as a `MinimalAnswer` JSON string for the HTTP API.
+returned as a `MinimalAnswer` dict for the HTTP API.
 `answer_dataset()` does the same for every question of a `search_dataset()`
 output, reusing the sources that were already retrieved.
 
@@ -596,6 +610,9 @@ subsets of the chunks:
 | every chunk | 16 493 | 0.810 | 0.737 |
 | Markdown chunks only | 847 | **0.830** | 0.707 |
 
+(These experiments predate adding the file path to the indexed text, which
+lifted the final scores to 0.900 and 0.818; the conclusion did not change.)
+
 Code questions mostly quote identifiers, which BM25 already matches exactly:
 embedding 15 600 code chunks bought about 1 point of recall for ~95% of the
 indexing time. Documentation questions, on the other hand, are paraphrases, and
@@ -652,7 +669,8 @@ Why these values:
 - **BM25 weighs twice as much as semantic search**, because it is the more
   reliable of the two on this corpus (see the table above). Semantic search is
   there to rescue the questions BM25 misses, not to outvote a correct BM25 hit.
-  Raising the semantic weight to 1.0 made code recall@5 fall from 0.707 to 0.606.
+  Raising the semantic weight to 1.0 made code recall@5 fall from 0.707 to 0.606
+  (measured at the time of the table above).
 - **The constant is 10, not the usual 60.** The 60 found in the literature comes
   from web-scale search. With 60, being ranked 1st (1/61) instead of 5th (1/65)
   makes a ~6% difference, so a strong first hit barely counts more than an
@@ -675,28 +693,30 @@ Xeon @ 2.80 GHz and 15 GB of RAM, on the public datasets (100 docs questions,
 For each question, recall@k is the share of its correct sources found in the
 top-k results. A correct source counts as found when one of our results is in
 the same file and overlaps it with an IoU (intersection over union of the two
-character ranges) of at least 0.05.
+character ranges) of at least 0.05. Scores from the official moulinette:
 
 | Dataset | recall@1 | recall@3 | recall@5 | recall@10 | Required recall@5 |
 |---|---|---|---|---|---|
-| docs | 0.610 | 0.760 | **0.830** | 0.870 | 0.80 |
-| code | 0.374 | 0.616 | **0.707** | 0.818 | 0.50 |
+| docs | 0.660 | 0.830 | **0.900** | 0.920 | 0.80 |
+| code | 0.465 | 0.758 | **0.818** | 0.869 | 0.50 |
 
-Both requirements are met. Code has the most comfortable margin. Docs is closer
-to its threshold: 3 of the 100 docs reference sources live in `.txt` files.
+Both requirements are met with a comfortable margin. The reference exam script
+(`exam_retrieval.sh`) also passes all 4 of its tests. Most remaining docs
+misses are questions whose reference source lives in a `.txt` file, or whose
+wording shares nothing with the answer.
 
 #### Effect of the chunk size
 
 The subject asks to report the effect of smaller chunks. Same pipeline, only
 `--max_chunk_size` changes:
 
-| max_chunk_size | Chunks | recall@5 docs | recall@5 code | recall@10 docs | recall@10 code |
-|---|---|---|---|---|---|
-| 2000 | 16 493 | **0.830** | **0.707** | **0.870** | **0.818** |
-| 1000 | 34 819 | 0.800 | 0.687 | 0.840 | 0.758 |
-| 500 | 75 579 | 0.780 | 0.606 | 0.820 | 0.687 |
+| max_chunk_size | Chunks | recall@5 docs | recall@5 code | recall@10 docs | recall@10 code | Index time |
+|---|---|---|---|---|---|---|
+| 2000 | 16 592 | **0.900** | **0.818** | **0.920** | **0.869** | 27 s |
+| 1000 | 35 008 | 0.850 | 0.768 | 0.890 | 0.859 | 43 s |
+| 500 | 75 996 | 0.830 | 0.707 | 0.860 | 0.788 | 67 s |
 
-Bigger chunks win on every metric. Two reasons:
+Bigger chunks win on every metric, and are faster to index. Two reasons:
 
 - A bigger chunk covers a bigger region of the file, so it has more chances to
   overlap the reference span, and the IoU bar is low (0.05).
@@ -705,28 +725,37 @@ Bigger chunks win on every metric. Two reasons:
   This is also why nested code chunks repeat their enclosing class and function
   signature (see [Chunking Strategy](#chunking-strategy)).
 
-At 500 characters, docs recall@5 falls below the 80% requirement, so 2000 (the
-maximum allowed) stays the default.
+Too large would hurt too, which the 2000-character cap prevents: one chunk
+would then mix several topics, and the model would get fewer, noisier sources.
+2000 (the maximum allowed) stays the default.
 
 #### Indexing time (limit: 5 minutes)
 
 | Run | Time |
 |---|---|
-| First ever run (downloads and quantizes the embedding model) | 44 s |
-| Full rebuild, model already on disk | 21 to 36 s |
+| First ever run (downloads and quantizes the embedding model), 4 cores | 53 s |
 | Same first run, restricted to a single CPU core | 1 min 13 s |
-| Incremental, one `.md` and one `.py` file changed | 13 s |
+| Full rebuild, model already on disk | 24 s |
+| Incremental, nothing changed | 5 s |
+| Incremental, one `.md` and one `.py` file changed | 6 s |
 
-Chunking the whole corpus takes 5 to 10 seconds; the rest is embedding the
-Markdown chunks. The single-core run is my stand-in for weak hardware: it still
-leaves about 4× of margin under the limit.
+Chunking the whole corpus takes 4 to 5 seconds; most of the rest is embedding
+the Markdown chunks. The single-core run is my stand-in for weak hardware: it
+still leaves about 4× of margin under the limit. After an incremental run, the
+search results are byte-for-byte identical to those of a full rebuild.
 
 #### Retrieval throughput (limit: 90 s for 200 questions)
 
-Running `search_dataset` on both public datasets (199 questions) takes 24 s in
-total, including loading the models and the index twice (once per command,
-~6 s each). The search itself costs ~2.5 ms per question for BM25 plus one
-batched embedding pass for all the questions.
+| Measure | Time |
+|---|---|
+| `exam_retrieval.sh`, 200 questions (2 `search_dataset` runs) | 6 s |
+| One `search_dataset` run (100 questions), process start included | 3 s |
+| One `search` command, process start included | 1.9 s |
+| One search through the HTTP API, retriever already loaded | 15 ms |
+
+Most of a command's time is starting Python and loading the index and the
+embedding model. The search itself costs ~2.5 ms per question for BM25, plus
+one batched embedding pass for all the questions.
 
 The BM25 optimisation described in
 [Lexical retrieval: BM25](#lexical-retrieval-bm25) is what made this possible:
@@ -734,6 +763,29 @@ with the original version, BM25 alone took ~150 ms per question, so ~30 s of the
 budget for 200 questions before even embedding anything.
 
 #### Answer generation
+
+| Measure | Time |
+|---|---|
+| First `answer` ever (downloads and quantizes Qwen3-0.6B) | 1 min 42 s |
+| `answer` command, model on disk | 10 to 12 s |
+| Through the HTTP API: first answer / next ones (model kept loaded) | 9 s / 4 s |
+| `answer_dataset`, 100 public docs questions | 6 min 37 s (~4 s each) |
+| `answer --k 0` (no source: the model is not loaded) | 1.9 s |
+
+On the 100 public docs questions, every answer is non-empty, none contains
+leftover "thinking", and they average 121 characters (2 sentences). Answers
+are grounded in the sources when retrieval found the right ones, for example
+from the `exam_answer.sh` run:
+
+| Question | Answer |
+|---|---|
+| What framework can be used to run and scale vLLM to multiple service replicas on clouds and Kubernetes? | The framework that can be used to run and scale vLLM to multiple service replicas on clouds and Kubernetes is SkyPilot. |
+| What is the CLI command for starting a chat interface in vLLM? | The CLI command for starting a chat interface in vLLM is `vllm chat`. |
+| How do you specify LoRA modules when starting a vLLM server? | To specify LoRA modules when starting a vLLM server, use the `--lora-modules` command-line argument with the `name` and `path` of each LoRA module. |
+
+The model's limits show on questions needing more than restating a source:
+asked what PagedAttention is, it answers from a ROCm-specific chunk instead of
+explaining the idea.
 
 ## Design Decisions
 
@@ -760,8 +812,9 @@ are always comparable.
 This is the decision that made the 5-minute indexing limit reachable, and it
 was taken from measurements rather than intuition (see
 [Only the documentation is embedded](#only-the-documentation-is-embedded)).
-It costs 3 points of code recall@5 (0.737 → 0.707, still far above 0.50), and
-it gained 2 points of docs recall@5, the dataset closest to its threshold.
+When measured, it cost 3 points of code recall@5 (0.737 → 0.707, still far
+above 0.50), and gained 2 points of docs recall@5, the dataset that was closest
+to its threshold.
 
 #### Structure-aware chunking
 
@@ -799,7 +852,7 @@ committing model weights): they are downloaded, converted and saved under
 
 #### A small, focused prompt
 
-Qwen3-0.6B is a very small model. Only the 5 best chunks are given as context,
+Qwen3-0.6B is a very small model. Only the 3 best chunks are given as context,
 even when more are retrieved, to keep the prompt short: the more text a small
 model has to read, the more likely it is to drift away from the question, and
 the slower it answers. Its "thinking" mode is disabled, and the system prompt
@@ -851,7 +904,25 @@ slices as a last resort.
 Docs recall@5 sat right at 0.80 for a long time, where any small change could
 make it fail. The fusion constants (weights and RRF constant) and the choice of
 what to embed were all decided by replaying the public questions and comparing
-recall, which brought it to 0.83.
+recall, which brought it to 0.83. Adding each chunk's file path to the text
+that BM25 and the embedder see (a question about "the LoRA docs" matches
+`docs/features/lora.md`) then brought it to 0.90.
+
+#### Incremental indexing silently broke BM25
+
+Saving BM25's arrays to disk (to load them instead of recomputing them at
+every search) introduced a bug: the arrays were fitted on the files that had
+just changed only, but loaded next to the chunks of the whole corpus, so after
+any incremental run their positions pointed at the wrong chunks (docs recall@5
+fell to 0.01). BM25 is now always refit on every chunk, and the test that
+caught it compares the results of an incremental run with a full rebuild.
+
+#### Qwen3 "thinking" out loud
+
+Qwen3 starts by default with a `<think>` block reasoning about the question,
+which used most of the 128-token answer budget, sometimes all of it. Thinking
+is disabled in the chat template: answers come out directly, in about a third
+of the time.
 
 #### Degenerate inputs
 

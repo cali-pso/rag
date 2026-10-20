@@ -1,3 +1,4 @@
+"""Recall@k computation, for the evaluate command."""
 from typing import Dict, List, Tuple
 from src.errors import UnknownQuestionID
 from src.utils import read_json_model
@@ -18,6 +19,7 @@ class Evaluator:
     ground-truth AnsweredQuestions dataset, the way the moulinette does."""
 
     def __init__(self) -> None:
+        """Starts with nothing loaded."""
         self.ground_truth_set = RagDataset(rag_questions=[])
         self.student_answers = StudentSearchResults(search_results=[], k=0)
         self.question_pairs: List[

@@ -1,3 +1,4 @@
+"""Hybrid retrieval: BM25 and FAISS rankings fused with RRF."""
 from typing import Dict, List
 from src.bm25retriever import BM25Retriever
 from src.vector_indexer import VectorIndexer
@@ -39,14 +40,14 @@ class HybridRetriever:
         lexical_weight: float = LEXICAL_WEIGHT,
         semantic_weight: float = SEMANTIC_WEIGHT,
     ) -> None:
-        """
-        Parameters:
-            bm25 (BM25Retriever): An already-fitted lexical retriever.
-            vector_indexer (VectorIndexer): An already-loaded semantic index.
-            rrf_constant (int): The RRF rank-damping constant.
-            lexical_weight (float): Contribution multiplier for BM25 ranks.
-            semantic_weight (float): Contribution multiplier for semantic
-                ranks.
+        """Wraps two loaded retrievers.
+
+        Args:
+            bm25: An already-fitted lexical retriever.
+            vector_indexer: An already-loaded semantic index.
+            rrf_constant: The RRF rank-damping constant.
+            lexical_weight: Contribution multiplier for BM25 ranks.
+            semantic_weight: Contribution multiplier for semantic ranks.
         """
         self.bm25 = bm25
         self.vector_indexer = vector_indexer
@@ -93,9 +94,9 @@ class HybridRetriever:
         """Returns the top-k sources for a single query, fused from both
         retrievers.
 
-        Parameters:
-            query (str): The natural-language question to search for.
-            k (int): Maximum number of sources to return.
+        Args:
+            query: The natural-language question to search for.
+            k: Maximum number of sources to return.
         """
         if k <= 0 or not query.strip():
             return []
@@ -114,9 +115,9 @@ class HybridRetriever:
         the lexical side stays per-query (BM25 is cheap enough per call
         that batching it wouldn't meaningfully help).
 
-        Parameters:
-            queries (List[str]): The natural-language questions to search for.
-            k (int): Maximum number of sources to return per query.
+        Args:
+            queries: The natural-language questions to search for.
+            k: Maximum number of sources to return per query.
         """
         results: List[List[MinimalSource]] = [[] for _ in queries]
         if k <= 0:

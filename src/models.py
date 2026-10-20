@@ -1,8 +1,9 @@
-from pydantic import BaseModel, Field, ConfigDict, model_validator
-from typing import Dict, List, Optional
-import uuid
-import re
+"""Pydantic models exchanged between the pipeline's stages."""
 import hashlib
+import re
+import uuid
+from typing import Dict, List, Optional
+from pydantic import BaseModel, ConfigDict, Field
 
 
 def make_source_id(
@@ -39,35 +40,49 @@ class MinimalSource(BaseModel):
 
 
 class UnansweredQuestion(BaseModel):
+    """A question, without its reference sources."""
+
     question_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     question: str
 
 
 class AnsweredQuestion(UnansweredQuestion):
+    """A question with its reference sources and answer."""
+
     sources: List[MinimalSource]
     answer: str
 
 
 class RagDataset(BaseModel):
+    """A dataset of questions."""
+
     rag_questions: List[AnsweredQuestion | UnansweredQuestion]
 
 
 class MinimalSearchResults(BaseModel):
+    """The sources retrieved for one question."""
+
     question_id: str
     question: str
     retrieved_sources: List[MinimalSource]
 
 
 class MinimalAnswer(MinimalSearchResults):
+    """The sources retrieved for one question, and its answer."""
+
     answer: str
 
 
 class StudentSearchResults(BaseModel):
+    """Output of search_dataset."""
+
     search_results: List[MinimalSearchResults]
     k: int
 
 
 class StudentSearchResultsAndAnswer(BaseModel):
+    """Output of answer and answer_dataset."""
+
     search_results: List[MinimalAnswer]
     k: int
 
@@ -80,22 +95,27 @@ class IndexCache(BaseModel):
     index_version: Optional[int] = None
 
 
-USER = r"[A-Za-z0-9_][A-Za-z0-9._-]{0,63}"           # no leading "-", no ":" (so no user:pass@)
+# Source URL grammar for RagConfig (remote sources: not wired yet).
+# No leading "-", no ":" (so no user:pass@).
+USER = r"[A-Za-z0-9_][A-Za-z0-9._-]{0,63}"
 LABEL = r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?"
-HOST = rf"(?:\[[0-9A-Fa-f:.]+\]|{LABEL}(?:\.{LABEL})*)"  # hostname, IPv4, or [IPv6]
+# Hostname, IPv4, or [IPv6].
+HOST = rf"(?:\[[0-9A-Fa-f:.]+\]|{LABEL}(?:\.{LABEL})*)"
 PORT = r"(?::\d{1,5})?"
-SEG = r"[^\s/\\\x00-\x1f]+"                           # one path segment: no spaces, backslashes, control chars
+# One path segment: no spaces, backslashes, control characters.
+SEG = r"[^\s/\\\x00-\x1f]+"
 PATH = rf"(?:/{SEG})*/?"
-NO_DOTDOT = r"(?!.*(?:^|[/:])\.\.(?:/|$))"            # no ".." segment anywhere
+# No ".." segment anywhere.
+NO_DOTDOT = r"(?!.*(?:^|[/:])\.\.(?:/|$))"
 
 URL_RE = re.compile(rf"""^{NO_DOTDOT}(?:
-    (?:file://)?(?:/|\./|~/)(?:{SEG})?{PATH}                     # local
-  | sftp://(?:{USER}@)?{HOST}{PORT}{PATH}                        # sftp
-  | smb://(?:(?:{USER};)?{USER}@)?{HOST}{PORT}/{SEG}{PATH}       # smb (share required)
-  | ssh://(?:{USER}@)?{HOST}{PORT}/{SEG}{PATH}                   # git+ssh
-  | https://(?:{USER}@)?{HOST}{PORT}/{SEG}{PATH}                 # git+https
-  | rsync://(?:{USER}@)?{HOST}{PORT}/{SEG}{PATH}                 # rsync daemon
-  | {USER}@{HOST}:(?!//)(?:{SEG})?{PATH}                         # scp-like: git@host:org/repo.git, me@host:/srv
+    (?:file://)?(?:/|\./|~/)(?:{SEG})?{PATH}                # local
+  | sftp://(?:{USER}@)?{HOST}{PORT}{PATH}                   # sftp
+  | smb://(?:(?:{USER};)?{USER}@)?{HOST}{PORT}/{SEG}{PATH}  # smb
+  | ssh://(?:{USER}@)?{HOST}{PORT}/{SEG}{PATH}              # git+ssh
+  | https://(?:{USER}@)?{HOST}{PORT}/{SEG}{PATH}            # git+https
+  | rsync://(?:{USER}@)?{HOST}{PORT}/{SEG}{PATH}            # rsync
+  | {USER}@{HOST}:(?!//)(?:{SEG})?{PATH}                    # scp-like
 )$""", re.VERBOSE)
 
 
@@ -105,7 +125,8 @@ class RagConfig(BaseModel):
     source_path: str = "./data/raw"
     url_type: Optional[str] = None
     subdir: Optional[str] = None
-    copy: bool = True
+    # "copy" would shadow BaseModel.copy().
+    copy_source: bool = True
     key_file_path: Optional[str] = None
     # SSH KEY (SFTP/GIT-SSH/RSYNC)
     known_hosts_file_path: Optional[str] = "~/.ssh/known_hosts"

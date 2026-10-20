@@ -1,10 +1,9 @@
+"""Implementation of the CLI commands, shared with the HTTP API."""
 import os
 import time
-import json
-from typing import Any, Dict
+from typing import TYPE_CHECKING, Any, Dict, Optional, Tuple
 from tqdm import tqdm
 from src.lexical_indexer import load_index, LEXICAL_INDEX_PATH
-from src.vector_indexer import FAISS_INDEX, FAISS_SOURCES
 from src.evaluator import Evaluator
 from src.errors import IndexNotFound, InvalidArgument
 from src.utils import (
@@ -25,8 +24,16 @@ from src.models import (
     StudentSearchResultsAndAnswer,
 )
 
+if TYPE_CHECKING:
+    from src.hybrid_retriever import HybridRetriever
+    from src.oracle import Oracle
+
 RAW_DATA_PATH = "data/raw"
-CONFIG_PATH = "data/config.json"
+# Same paths as in src/vector_indexer.py and src/bm25retriever.py, kept
+# here so that importing this module stays light (no faiss, openvino).
+FAISS_INDEX = "data/processed/faiss_index.bin"
+FAISS_SOURCES = "data/processed/faiss_sources.json"
+BM25_ARRAYS = "data/processed/bm25.npz"
 SINGLE_QUERY_SEARCH_DIR = "data/output/search_results/single_query"
 SINGLE_QUERY_ANSWER_DIR = "data/output/search_results_and_answer/single_query"
 SINGLE_QUERY_FILE_NAME = "single_query.json"
@@ -41,6 +48,15 @@ INDEX_VERSION = 3
 # batch is padded to the longest one, so large batches of ~5k-token
 # prompts blow up memory on a CPU-only machine.
 ANSWER_BATCH_SIZE = 1
+NO_SOURCES_ANSWER = (
+    "No source was retrieved for this question, so there is nothing to "
+    "ground an answer on."
+)
+# The loaded retriever and model, reused by the following calls of the
+# same process (HTTP API). The retriever is keyed by the modification
+# times of the index files, so a new `index` run is picked up.
+_retriever_cache: Dict[Tuple[float, ...], "HybridRetriever"] = {}
+_oracle_cache: Dict[str, "Oracle"] = {}
 
 
 def _write_json(save_directory: str, file_name: str, json_str: str) -> str:
@@ -53,26 +69,35 @@ def _write_json(save_directory: str, file_name: str, json_str: str) -> str:
     return out_path
 
 
-def _build_retriever() -> HybridRetriever:
-    """Loads the persisted lexical and semantic indexes and wraps them in a
-    HybridRetriever.
+def _build_retriever() -> "HybridRetriever":
+    """Loads the persisted indexes into a HybridRetriever, or returns the
+    one already loaded if the index files did not change since.
 
     Raises:
         IndexNotFound: If `index` has not been run yet.
     """
-    from src.vector_indexer import FAISS_INDEX, FAISS_SOURCES
-    from src.bm25retriever import BM25Retriever
-    from src.vector_indexer import VectorIndexer
-    from src.hybrid_retriever import HybridRetriever
-    
-
-    if not all(
-        os.path.isfile(path)
-        for path in (LEXICAL_INDEX_PATH, FAISS_INDEX, FAISS_SOURCES)
-    ):
+    index_files = (LEXICAL_INDEX_PATH, FAISS_INDEX, FAISS_SOURCES)
+    if not all(os.path.isfile(path) for path in index_files):
         raise IndexNotFound(
             "no index found under data/processed/, run `index` first."
         )
+    key = tuple(
+        os.path.getmtime(path)
+        for path in index_files + (BM25_ARRAYS,)
+        if os.path.exists(path)
+    )
+    if key not in _retriever_cache:
+        _retriever_cache.clear()
+        _retriever_cache[key] = _load_retriever()
+    return _retriever_cache[key]
+
+
+def _load_retriever() -> "HybridRetriever":
+    """Builds a HybridRetriever from the files under data/processed/."""
+    from src.bm25retriever import BM25Retriever
+    from src.vector_indexer import VectorIndexer
+    from src.hybrid_retriever import HybridRetriever
+
     # The saved index is the snapshot of the last `index` run: files
     # deleted since then are dropped by re-running `index`, not here.
     sources_dict = load_index(set())
@@ -82,28 +107,38 @@ def _build_retriever() -> HybridRetriever:
     except FileNotFoundError:
         bm25 = BM25Retriever()
         bm25.fit(sources)
-        
     return HybridRetriever(bm25=bm25, vector_indexer=VectorIndexer())
+
+
+def _get_oracle() -> "Oracle":
+    """Loads Qwen3-0.6B once per process."""
+    if "qwen" not in _oracle_cache:
+        from src.oracle import Oracle
+
+        _oracle_cache["qwen"] = Oracle()
+    return _oracle_cache["qwen"]
 
 
 def _clear_index() -> None:
     """Removes every persisted index file so the next build starts from
     scratch."""
-    for path in (LEXICAL_INDEX_PATH, FAISS_INDEX, FAISS_SOURCES):
+    for path in (LEXICAL_INDEX_PATH, FAISS_INDEX, FAISS_SOURCES, BM25_ARRAYS):
         if os.path.exists(path):
             os.remove(path)
 
 
-def index(max_chunk_size: int = MAX_CHUNK_SIZE_LIMIT) -> Dict[str, str | int]:
+def index(
+    max_chunk_size: int = MAX_CHUNK_SIZE_LIMIT,
+) -> Dict[str, str | int | float]:
     """Ingests data/raw/ and builds the lexical and semantic indexes under
     data/processed/.
 
     Args:
         max_chunk_size: Maximum width, in characters, of a chunk's span.
+
+    Returns:
+        Statistics of the run.
     """
-    
-
-
     if (
         isinstance(max_chunk_size, bool)
         or not isinstance(max_chunk_size, int)
@@ -151,13 +186,14 @@ def index(max_chunk_size: int = MAX_CHUNK_SIZE_LIMIT) -> Dict[str, str | int]:
     lexical_indexer = LexicalIndexer()
     lexical_indexer.create_index(paths, deleted_paths, max_chunk_size)
     sources_dict = lexical_indexer.chunks
-    sources = []
-    for file in sources_dict.keys():
-        if file in all_paths:
-            for source in sources_dict[file]:
-                sources.append(source)
+    # Every chunk, in the order _load_retriever() reads them back: BM25
+    # is refit on the whole corpus, its arrays point into this list.
+    all_sources = [s for file in sources_dict for s in sources_dict[file]]
+    # Only the new or modified files need new embeddings.
+    changed = set(all_paths)
+    sources = [s for s in all_sources if s.file_path in changed]
     print(
-        f"Indexed as {len(sources)} chunks",
+        f"Indexed as {len(all_sources)} chunks",
         f"in {(time.time() - start):.3f}s.",
     )
     print("Building vector index from the Markdown chunks...")
@@ -168,12 +204,11 @@ def index(max_chunk_size: int = MAX_CHUNK_SIZE_LIMIT) -> Dict[str, str | int]:
     vector_indexer.create_index(sources, deleted_paths)
     vector_indexer.save()
 
-
     print("Fitting BM25 retriever...")
     from src.bm25retriever import BM25Retriever
 
     bm25 = BM25Retriever()
-    bm25.fit(sources)
+    bm25.fit(all_sources)
     print("Saving results...")
     bm25.save()
     save_cache(cache)
@@ -183,17 +218,20 @@ def index(max_chunk_size: int = MAX_CHUNK_SIZE_LIMIT) -> Dict[str, str | int]:
         "status": "done",
         "time_elapsed": time.time() - start,
         "files_indexed": len(all_paths),
-        "chunks": len(sources),
+        "chunks": len(all_sources),
     }
-    
 
 
-def search(query: Any, k: Any = 10, silent: bool = False) -> None:
+def search(query: Any, k: Any = 10, silent: bool = False) -> Dict[str, Any]:
     """Retrieves the top-k sources for a single query and prints them.
 
     Args:
         query: The question to search for.
         k: Number of sources to retrieve.
+        silent: Print nothing (HTTP API).
+
+    Returns:
+        The MinimalSearchResults, as a dict.
     """
     query = as_query(query)
     k = check_k(k)
@@ -206,7 +244,8 @@ def search(query: Any, k: Any = 10, silent: bool = False) -> None:
     retriever = _build_retriever()
     sources = retriever.search(question.question, k)
     if not silent:
-        print(f"Retrieved {len(sources)} sources in {(time.time() - start):.3f}s")
+        elapsed = time.time() - start
+        print(f"Retrieved {len(sources)} sources in {elapsed:.3f}s")
         for rank, source in enumerate(sources, start=1):
             print(
                 f"{rank}. {source.file_path} "
@@ -224,7 +263,7 @@ def search_dataset(
     dataset_path: Any,
     save_directory: Any = "data/output/search_results/",
     k: Any = 10,
-) -> None:
+) -> Dict[str, Any]:
     """Runs search over every question of a dataset and writes a
     StudentSearchResults JSON file named after the dataset file.
 
@@ -232,6 +271,9 @@ def search_dataset(
         dataset_path: Path to a RagDataset JSON file.
         save_directory: Directory the results file is written to.
         k: Number of sources to retrieve per question.
+
+    Returns:
+        The StudentSearchResults, as a dict.
     """
     dataset_path = as_path("dataset_path", dataset_path)
     save_directory = as_path("save_directory", save_directory)
@@ -267,7 +309,7 @@ def search_dataset(
 
 def answer(
     query: Any, k: Any = 10, save_directory: Any = SINGLE_QUERY_ANSWER_DIR
-) -> None:
+) -> Optional[Dict[str, Any]]:
     """Retrieves the top-k sources for a single query, generates an answer
     from them, prints it and saves a StudentSearchResultsAndAnswer JSON
     file.
@@ -276,17 +318,18 @@ def answer(
         query: The question to answer.
         k: Number of sources to retrieve and pass to the model.
         save_directory: Directory the answer file is written to.
+
+    Returns:
+        The MinimalAnswer as a dict, or None for an empty query.
     """
     query = as_query(query)
     k = check_k(k)
     save_directory = as_path("save_directory", save_directory)
     if not query.strip():
         print("Warning: empty query, there is nothing to answer.")
-        return
+        return None
     # Fail on an unusable output directory now, not after generation.
     os.makedirs(save_directory, exist_ok=True)
-
-    from src.oracle import Oracle
 
     print(f"Processing query: {query}")
     question = UnansweredQuestion(question=query)
@@ -296,12 +339,17 @@ def answer(
         question=question.question,
         retrieved_sources=retriever.search(question.question, k),
     )
-    model = Oracle()
+    # Without sources (k=0 or nothing matched) the model would only make
+    # an answer up: skip it, and its loading time.
     minimal_answer = MinimalAnswer(
         question_id=result.question_id,
         question=result.question,
         retrieved_sources=result.retrieved_sources,
-        answer=model.answer(result),
+        answer=(
+            _get_oracle().answer(result)
+            if result.retrieved_sources
+            else NO_SOURCES_ANSWER
+        ),
     )
     print(minimal_answer.answer)
     out_path = _write_json(
@@ -336,16 +384,19 @@ def answer_dataset(
     # Fail on an unusable output directory now, not after generation.
     os.makedirs(save_directory, exist_ok=True)
 
-    from src.oracle import Oracle
-
     results = student_search_results.search_results
     print(f"Loaded {len(results)} questions")
-    model = Oracle()
+    grounded = [r for r in results if r.retrieved_sources]
+    model = _get_oracle() if grounded else None
     answers = []
     with tqdm(total=len(results), desc="Answering") as progress:
         for i in range(0, len(results), ANSWER_BATCH_SIZE):
-            batch = results[i : i + ANSWER_BATCH_SIZE]
-            for result, text in zip(batch, model.answer_batch(batch)):
+            end = i + ANSWER_BATCH_SIZE
+            batch = results[i:end]
+            texts = [NO_SOURCES_ANSWER] * len(batch)
+            if model is not None and any(r.retrieved_sources for r in batch):
+                texts = model.answer_batch(batch)
+            for result, text in zip(batch, texts):
                 answers.append(
                     MinimalAnswer(
                         question_id=result.question_id,

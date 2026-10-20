@@ -1,3 +1,4 @@
+"""Chunking of Python and Markdown/text files, saved as JSON."""
 import ast
 import re
 import os
@@ -36,6 +37,8 @@ def _snap_forward_to_word_start(text: str, pos: int, limit: int) -> int:
 
 
 class LexicalIndexer(BaseModel):
+    """Splits files into chunks and keeps them per file path."""
+
     chunks: Dict[str, List[MinimalSource]] = {}
 
     @validate_call
@@ -90,7 +93,21 @@ class LexicalIndexer(BaseModel):
         max_chunk_size: int = Field(lt=2001, default=2000),
         offset: int = 0,
     ) -> List[MinimalSource]:
+        """Splits text on the first separator of sep_list, recursing into
+        the next separators for pieces still too long, and packs the
+        pieces back into chunks of less than max_chunk_size characters.
 
+        Args:
+            file_path: The file the text comes from.
+            content: Text to split; the file is read if None.
+            sep_index: Separator of sep_list to split on.
+            sep_list: Separators, from coarsest to finest.
+            max_chunk_size: Maximum width of a chunk, in characters.
+            offset: Position of content in the file.
+
+        Returns:
+            The chunks, in file order.
+        """
         chunks = []
         current_index = 0
 
@@ -209,7 +226,17 @@ class LexicalIndexer(BaseModel):
         content: Optional[str] = None,
         max_chunk_size: int = Field(lt=2001, default=2000),
     ) -> List[MinimalSource]:
+        """Splits Python code along its top-level statements (AST), falling
+        back to text splitting if the file does not parse.
 
+        Args:
+            file_path: The file the code comes from.
+            content: Code to split; the file is read if None.
+            max_chunk_size: Maximum width of a chunk, in characters.
+
+        Returns:
+            The chunks, in file order.
+        """
         if content is None:
             with open(file_path, "r", encoding="utf-8") as f:
                 content = f.read()
@@ -400,7 +427,7 @@ class LexicalIndexer(BaseModel):
         self,
         file_path: str = LEXICAL_INDEX_PATH,
     ) -> None:
-
+        """Saves the chunks as JSON."""
         os.makedirs(os.path.dirname(file_path), exist_ok=True)
 
         with open(file_path, "w", encoding="utf-8") as f:

@@ -1,3 +1,4 @@
+"""Command-line entry point: `uv run python -m src <command>`."""
 import functools
 import os
 import sys
@@ -14,13 +15,14 @@ from src.commands import (
 )
 
 
-def _cli(func: Callable[..., None]) -> Callable[..., None]:
+def _cli(func: Callable[..., Any]) -> Callable[..., None]:
     """Wraps a command so that no exception ever reaches the user as a
     traceback: each one becomes a one-line message on stderr and a
     non-zero exit status. Set RAG_DEBUG=1 to get the traceback back."""
 
     @functools.wraps(func)
     def wrapper(*args: Any, **kwargs: Any) -> None:
+        """Runs func, reporting any exception as a one-line error."""
         try:
             func(*args, **kwargs)
         except KeyboardInterrupt:

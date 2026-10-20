@@ -1,3 +1,4 @@
+"""Okapi BM25 lexical retriever."""
 import math
 import re
 from collections import Counter
@@ -48,10 +49,11 @@ class BM25Retriever:
     """
 
     def __init__(self, k1: float = 1.5, b: float = 0.75) -> None:
-        """
-        Parameters:
-            k1 (float): Term-frequency saturation.
-            b (float): Strength of the document-length normalization.
+        """Creates an empty retriever; call fit() or load().
+
+        Args:
+            k1: Term-frequency saturation.
+            b: Strength of the document-length normalization.
         """
         self.k1 = k1
         self.b = b
@@ -63,7 +65,14 @@ class BM25Retriever:
         self.impacts = np.zeros(0, dtype=np.float64)
 
     def save(self) -> None:
-        np.savez(BM25_ARRAYS, offsets=self.offsets, doc_ids=self.doc_ids, impacts=self.impacts, avgdl=np.array(self.avgdl))
+        """Writes the fitted arrays and vocabulary under data/processed/."""
+        np.savez(
+            BM25_ARRAYS,
+            offsets=self.offsets,
+            doc_ids=self.doc_ids,
+            impacts=self.impacts,
+            avgdl=np.array(self.avgdl),
+        )
         with open(BM25_VOCAB, "wb") as f:
             pickle.dump(self.vocabulary, f, protocol=pickle.HIGHEST_PROTOCOL)
 

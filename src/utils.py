@@ -1,3 +1,4 @@
+"""Argument validation, JSON input and the indexing cache."""
 import os
 import hashlib
 from typing import Any, Dict, List, Set, Tuple, Type, TypeVar

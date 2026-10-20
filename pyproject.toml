@@ -25,3 +25,26 @@ url = "https://download.pytorch.org/whl/cpu"
 
 [tool.uv]
 compile-bytecode = true
+
+[tool.mypy]
+# `mypy .` from the repository root: same exclusions as setup.cfg.
+exclude = ["^\\.venv/", "^data/"]
+explicit_package_bases = true
+
+[[tool.mypy.overrides]]
+# Libraries shipped without type information.
+module = [
+    "fire",
+    "openvino",
+    "openvino_genai",
+    "openvino_tokenizers",
+    "optimum.*",
+    "tokenizers",
+    "tqdm",
+]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+# transformers' from_pretrained() is untyped (--strict only).
+module = "src.oracle"
+disallow_untyped_calls = false

@@ -1,3 +1,4 @@
+"""Semantic index: all-MiniLM-L6-v2 embeddings searched with FAISS."""
 import os
 import json
 import shutil
@@ -77,9 +78,10 @@ class Embedder:
     """
 
     def __init__(self, model_dir: Path = EMBED_OV_DIR) -> None:
-        """
-        Parameters:
-            model_dir (Path): Directory written by export_embedder().
+        """Loads the tokenizer and compiles the model.
+
+        Args:
+            model_dir: Directory written by export_embedder().
         """
         self.tokenizer = Tokenizer.from_file(str(model_dir / "tokenizer.json"))
         self.tokenizer.enable_truncation(MAX_SEQ_LENGTH)
@@ -104,10 +106,10 @@ class Embedder:
     ) -> np.ndarray:
         """Embeds texts into L2-normalized float32 vectors.
 
-        Parameters:
-            texts (List[str]): The texts to embed.
-            batch_size (int): Texts run through the model at once.
-            show_progress (bool): Whether to display a progress bar.
+        Args:
+            texts: The texts to embed.
+            batch_size: Texts run through the model at once.
+            show_progress: Whether to display a progress bar.
 
         Returns:
             An array of shape (len(texts), dimension).
@@ -120,7 +122,9 @@ class Embedder:
             end = i + batch_size
             encoded = self.tokenizer.encode_batch(texts[i:end])
             ids = np.array([e.ids for e in encoded], dtype=np.int64)
-            mask = np.array([e.attention_mask for e in encoded], dtype=np.int64)
+            mask = np.array(
+                [e.attention_mask for e in encoded], dtype=np.int64
+            )
             hidden = self.model({
                 "input_ids": ids,
                 "attention_mask": mask,
@@ -137,6 +141,8 @@ class Embedder:
 
 
 class VectorIndexer:
+    """FAISS inner-product index over the Markdown chunks."""
+
     def __init__(self) -> None:
         """Loads the quantized embedding model (exporting it on first use)
         and the saved FAISS index, or starts an empty one."""
@@ -221,9 +227,9 @@ class VectorIndexer:
         """Embeds a single query and returns its top-k nearest chunks,
         ranked closest first.
 
-        Parameters:
-            query (str): The natural-language question to search for.
-            k (int): Maximum number of sources to return.
+        Args:
+            query: The natural-language question to search for.
+            k: Maximum number of sources to return.
         """
         return self.search_batch([query], k)[0]
 
@@ -234,9 +240,9 @@ class VectorIndexer:
         call, and returns each query's top-k nearest chunks in the same
         order as `queries`.
 
-        Parameters:
-            queries (List[str]): The natural-language questions to search for.
-            k (int): Maximum number of sources to return per query.
+        Args:
+            queries: The natural-language questions to search for.
+            k: Maximum number of sources to return per query.
         """
         if not queries or k <= 0 or self.index.ntotal == 0:
             return [[] for _ in queries]
