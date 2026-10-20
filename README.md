@@ -48,6 +48,10 @@ or
 ```bash
 uv run python3 -m src index [--max_chunk_size 2000]
 ```
+or, using the HTTP API with `curl`:
+```bash
+curl -X POST 127.0.0.1:5000/index -d max_chunk_size=2000
+```
 The first run also downloads and quantizes the embedding model (see
 [Semantic retrieval](#semantic-retrieval-embeddings-and-faiss)), so it needs an
 internet connection.
@@ -59,21 +63,17 @@ uv run python3 -m src search "How do I enable LoRA?" --k 5
 
 To retrieve the top-k chunks for a dataset of questions, run:
 ```bash
-make search_[code/docs]
-```
-or
-```bash
 uv run python3 -m src search_dataset \
        --dataset_path [dataset_path] \
        --k [k] \
        --save_directory [save_directory]
 ```
+or, again through the API:
+```bash
+curl -X POST 127.0.0.1:5000/search_dataset -d dataset_path=[DATASET_PATH]
+```
 
 To measure your own recall@k against a ground-truth dataset, run:
-```bash
-make eval_[code/docs]
-```
-or
 ```bash
 uv run python3 -m src evaluate \
        --student_search_results_path [student_search_results_path] \
@@ -83,6 +83,10 @@ uv run python3 -m src evaluate \
 To answer a single question, run:
 ```bash
 uv run python3 -m src answer "How do I enable LoRA?" --k 5
+```
+or
+```bash
+curl -X POST 127.0.0.1:5000/answer -d query="How do I enable LoRA?" -d k=5
 ```
 
 To generate an answer for every question of a dataset previously run through
@@ -104,13 +108,15 @@ or
 ```bash
 uv run flask --app src.rag_http_api run
 ```
-
-The exposed endpoints are `/index` and `/answer`.
 See [Example Usage](#example-usage) for more information.
 
 To clean the repository of all generated files, run:
 ```bash
 make clean
+```
+To include models and venv created by program, run:
+```bash
+make fclean
 ```
 
 To run the linters (flake8 and mypy), run:
@@ -917,29 +923,6 @@ any incremental run their positions pointed at the wrong chunks (docs recall@5
 fell to 0.01). BM25 is now always refit on every chunk, and the test that
 caught it compares the results of an incremental run with a full rebuild.
 
-#### Qwen3 "thinking" out loud
-
-Qwen3 starts by default with a `<think>` block reasoning about the question,
-which used most of the 128-token answer budget, sometimes all of it. Thinking
-is disabled in the chat template: answers come out directly, in about a third
-of the time.
-
-#### Degenerate inputs
-
-Python Fire guesses argument types: `--k abc` arrives as a string, `--k 2.5` as
-a float, a bare `--dataset_path` as `True`, and `--dataset_path 0` as the integer
-0, which Python's `open()` treats as standard input, so the program would hang
-waiting for keyboard input. Listing these cases one by one and validating every
-argument before doing any work was what made the CLI robust.
-
-#### Running the API with Flask
-
-`flask --app src/rag_http_api run` failed with `ModuleNotFoundError: No module
-named 'src'`. Given a file path, Flask looks for the package structure through
-`__init__.py` files, and `src/` has none, so it imported the file as a
-standalone module and the `from src...` imports broke. Passing the module name
-instead (`--app src.rag_http_api`) makes Flask import it as part of the `src`
-package, like `python -m src` does.
 
 ## Example Usage
 
