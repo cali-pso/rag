@@ -1,6 +1,7 @@
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ConfigDict, model_validator
 from typing import Dict, List, Optional
 import uuid
+import re
 import hashlib
 
 
@@ -77,3 +78,43 @@ class IndexCache(BaseModel):
     file_hashes: Dict[str, str] = {}
     max_chunk_size: Optional[int] = None
     index_version: Optional[int] = None
+
+
+USER = r"[A-Za-z0-9_][A-Za-z0-9._-]{0,63}"           # no leading "-", no ":" (so no user:pass@)
+LABEL = r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?"
+HOST = rf"(?:\[[0-9A-Fa-f:.]+\]|{LABEL}(?:\.{LABEL})*)"  # hostname, IPv4, or [IPv6]
+PORT = r"(?::\d{1,5})?"
+SEG = r"[^\s/\\\x00-\x1f]+"                           # one path segment: no spaces, backslashes, control chars
+PATH = rf"(?:/{SEG})*/?"
+NO_DOTDOT = r"(?!.*(?:^|[/:])\.\.(?:/|$))"            # no ".." segment anywhere
+
+URL_RE = re.compile(rf"""^{NO_DOTDOT}(?:
+    (?:file://)?(?:/|\./|~/)(?:{SEG})?{PATH}                     # local
+  | sftp://(?:{USER}@)?{HOST}{PORT}{PATH}                        # sftp
+  | smb://(?:(?:{USER};)?{USER}@)?{HOST}{PORT}/{SEG}{PATH}       # smb (share required)
+  | ssh://(?:{USER}@)?{HOST}{PORT}/{SEG}{PATH}                   # git+ssh
+  | https://(?:{USER}@)?{HOST}{PORT}/{SEG}{PATH}                 # git+https
+  | rsync://(?:{USER}@)?{HOST}{PORT}/{SEG}{PATH}                 # rsync daemon
+  | {USER}@{HOST}:(?!//)(?:{SEG})?{PATH}                         # scp-like: git@host:org/repo.git, me@host:/srv
+)$""", re.VERBOSE)
+
+
+class RagConfig(BaseModel):
+    """Configuration for the RAG system."""
+
+    source_path: str = "./data/raw"
+    url_type: Optional[str] = None
+    subdir: Optional[str] = None
+    copy: bool = True
+    key_file_path: Optional[str] = None
+    # SSH KEY (SFTP/GIT-SSH/RSYNC)
+    known_hosts_file_path: Optional[str] = "~/.ssh/known_hosts"
+    username: Optional[str] = None
+    password_env: Optional[str] = None
+    # GIT
+    token_env: Optional[str] = None
+    branch: Optional[str] = None
+    # SMB
+    domain: Optional[str] = None
+
+    model_config = ConfigDict(validate_assignment=True)

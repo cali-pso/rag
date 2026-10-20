@@ -1,5 +1,6 @@
 import os
 import time
+import json
 from typing import Any, Dict
 from tqdm import tqdm
 from src.lexical_indexer import load_index, LEXICAL_INDEX_PATH
@@ -22,9 +23,11 @@ from src.models import (
     StudentSearchResults,
     MinimalAnswer,
     StudentSearchResultsAndAnswer,
+    RagConfig,
 )
 
 RAW_DATA_PATH = "data/raw"
+CONFIG_PATH = "data/config.json"
 SINGLE_QUERY_SEARCH_DIR = "data/output/search_results/single_query"
 SINGLE_QUERY_ANSWER_DIR = "data/output/search_results_and_answer/single_query"
 SINGLE_QUERY_FILE_NAME = "single_query.json"
@@ -260,6 +263,7 @@ def search_dataset(
         student_search_results.model_dump_json(),
     )
     print(f"Saved student_search_results to {out_path}")
+    return student_search_results.model_dump()
 
 
 def answer(
@@ -393,3 +397,30 @@ def evaluate(student_search_results_path: Any, dataset_path: Any) -> None:
     print("Evaluation Results")
     print("=" * 40)
     print("  ".join(f"{name}: {value:.3f}" for name, value in recalls.items()))
+
+
+def get_config() -> str:
+    with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+        config_data = f.read()
+    return RagConfig.model_validate_json(config_data).model_dump()
+
+def set_config(*args: str, **kwargs: Any) -> str:
+    with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+        config_data = f.read()
+    config = RagConfig.model_validate_json(config_data)
+    for arg in args:
+        if "=" not in arg:
+            raise InvalidArgument(
+                f"Invalid argument {arg!r}, expected key=value."
+            )
+        key, value = arg.split("=", 1)
+        if not hasattr(config, key):
+            raise InvalidArgument(f"Unknown config key {key!r}.")
+        setattr(config, key, value)
+    for key, value in kwargs.items():
+        if not hasattr(config, key):
+            raise InvalidArgument(f"Unknown config key {key!r}.")
+        setattr(config, key, value)
+    with open(CONFIG_PATH, "w", encoding="utf-8") as f:
+        f.write(config.model_dump_json())
+    return config.model_dump()
