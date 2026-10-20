@@ -51,15 +51,3 @@ def http_api_answer():
 @app.route("/ping", methods=["GET", "POST"])
 def ping():
     return "pong\n"
-
-@app.route("/set_config", methods=["POST"])
-def http_api_set_config():
-    args = request.form.to_dict()
-    try:
-        return set_config(**args)
-    except Exception as e:
-        return f"Error parsing argument: {e}"
-
-@app.route("/get_config", methods=["GET"])
-def http_api_get_config():
-    return get_config()
